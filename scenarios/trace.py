@@ -1,4 +1,5 @@
 from memory.model import Agent, Artifact, ArtifactScope, GlobalMemory, Task
+from memory.protocols import WriteThroughStrongProtocol
 from memory.simulator import Simulator
 
 
@@ -16,7 +17,11 @@ def run() -> None:
         },
     )
 
-    sim = Simulator(agents=[Agent("A"), Agent("B")], global_memory=global_memory)
+    sim = Simulator(
+        agents=[Agent("A"), Agent("B")],
+        global_memory=global_memory,
+        protocol=WriteThroughStrongProtocol(),
+    )
     sim.schedule_read(t=0, agent_id="A", artifact_id=("T1", "shared_plan"))
     sim.schedule_read(t=10, agent_id="A", artifact_id=("T1", "shared_plan"))
     sim.schedule_write(t=12, agent_id="A", artifact_id=("T1", "shared_plan"), size=1200)
