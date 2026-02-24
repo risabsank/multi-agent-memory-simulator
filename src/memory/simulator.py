@@ -6,13 +6,14 @@ from .events import Event, EventQueue, EventType
 from .model import Agent, ArtifactId, GlobalMemory, VersionClock
 from .protocols import ConsistencyProtocol, WriteThroughStrongProtocol
 
-
+# structured execution log entry for each simulation step
+# acts as an event journal
 @dataclass(slots=True)
 class TraceLine:
-    t: int
-    event: str
-    detail: str
-    metadata: dict[str, object] = field(default_factory=dict) # structured analysis beyond log-string parsing
+    t: int # simulation time
+    event: str # event label
+    detail: str # summary
+    metadata: dict[str, object] = field(default_factory=dict) # context
 
 
 @dataclass(slots=True)

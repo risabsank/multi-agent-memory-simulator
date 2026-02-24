@@ -127,11 +127,13 @@ class WriteThroughStrongProtocol:
         new_version = simulator.clock.next(artifact_id)
         old_artifact = simulator.global_memory.store.get(artifact_id)
         scope = old_artifact.scope if old_artifact else ArtifactScope.TASK
+        
         claim_type = old_artifact.claim_type if old_artifact else ClaimType.PLAN
         provenance = agent.agent_id
-        confidence = float(event.payload.get("confidence", 0.8))
-
+        confidence = float(event.payload.get("confidence", 0.8)) # confidence defaults to 0.8 only if caller didn't prvide one
         coherence_state = CoherenceState.ACCEPTED
+
+        # if new confidence is less than old_artifact.confidence we say that it is contested
         if old_artifact and confidence < old_artifact.confidence:
             coherence_state = CoherenceState.CONTESTED
 
@@ -180,20 +182,38 @@ class WriteThroughStrongProtocol:
                 "version_id": new_version,
                 "size": size,
                 "scope": scope,
+                "claim_type": claim_type,
+                "provenance": provenance,
+                "confidence": confidence,
+                "coherence_state": coherence_state,
+                "observed_at": simulator.now,
+                "valid_at": None,
+                "requested_t": requested_t,
             },
         )
 
     def on_write_commit(self, simulator: Simulator, event: Event) -> None:
         artifact_id = tuple(event.payload["artifact_id"])
+        scope = event.payload["scope"]
+        claim_type = event.payload["claim_type"]
+        coherence_state = event.payload["coherence_state"]
+
+        if isinstance(scope, str):
+            scope = ArtifactScope(scope)
+        if isinstance(claim_type, str):
+            claim_type = ClaimType(claim_type)
+        if isinstance(coherence_state, str):
+            coherence_state = CoherenceState(coherence_state)
+
         artifact = Artifact( # constructs full Artifact with metadata
             artifact_id=artifact_id,
             version_id=event.payload["version_id"],
             size=event.payload["size"],
-            scope=event.payload["scope"],
-            claim_type=event.payload["claim_type"],
+            scope=scope,
+            claim_type=claim_type,
             provenance=event.payload["provenance"],
             confidence=event.payload["confidence"],
-            coherence_state=event.payload["coherence_state"],
+            coherence_state=coherence_state,
             observed_at=event.payload["observed_at"],
             valid_at=event.payload["valid_at"],
         )

@@ -33,12 +33,12 @@ class Artifact:
     version_id: int # tracks semantic evolution over time
     size: int
     scope: ArtifactScope
-    claim_type: ClaimType = ClaimType.FACT
-    provenance: str = "system"
+    claim_type: ClaimType = ClaimType.FACT # type of claim
+    provenance: str = "system" # who/what created the artifact
     confidence: float = 1.0
     coherence_state: CoherenceState = CoherenceState.ACCEPTED
-    observed_at: int = 0
-    valid_at: int | None = None
+    observed_at: int = 0 # point at which artifact was observed
+    valid_at: int | None = None # timestamp at which the artifact is valid
 
 # artifact copy stored in an agent's local cache
 # working memory view for an agent

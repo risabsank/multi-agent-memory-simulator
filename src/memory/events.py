@@ -35,7 +35,7 @@ class EventQueue:
             type=event_type,
             src=src,
             dst=dst,
-            payload=payload or {},
+            payload=payload or {}, # protocol-defined schema
         )
         self._next_eid += 1
         heappush(self._heap, ev) # push event to the heapq
