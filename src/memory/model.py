@@ -6,12 +6,16 @@ from enum import Enum
 # defines the semantic visibility of an artifact
 # relevance of the artifact to task, local subsystem, or full scope
 class ArtifactScope(str, Enum):
+    """Semantic visibility of an artifact."""
+
     LOCAL = "local"
     TASK = "task"
     GLOBAL = "global"
 
 # semantic enums
 class ClaimType(str, Enum):
+    """Type of statement represented by an artifact."""
+
     FACT = "fact"
     HYPOTHESIS = "hypothesis"
     PLAN = "plan"
@@ -19,6 +23,8 @@ class ClaimType(str, Enum):
 
 
 class CoherenceState(str, Enum):
+    """Quality/conflict state for semantic coherence."""
+
     ACCEPTED = "accepted" # usable as stable context
     CONTESTED = "contested" # conflicting evidence exists
     PROVISIONAL = "provisional" # low confidence or weak provenance
@@ -26,9 +32,10 @@ class CoherenceState(str, Enum):
 
 ArtifactId = tuple[str, str] # (task_id, local_name)
 
-# logicl memory unit being read/written
 @dataclass(slots=True)
 class Artifact:
+    """Logical memory unit read/written by agents."""
+
     artifact_id: ArtifactId
     version_id: int # tracks semantic evolution over time
     size: int
@@ -40,10 +47,10 @@ class Artifact:
     observed_at: int = 0 # point at which artifact was observed
     valid_at: int | None = None # timestamp at which the artifact is valid
 
-# artifact copy stored in an agent's local cache
-# working memory view for an agent
 @dataclass(slots=True)
 class CacheEntry:
+    """Artifact copy stored in an agent's local cache."""
+    
     artifact_id: ArtifactId
     version_id: int
     size: int
@@ -61,24 +68,26 @@ class AgentStats:
     write_count: int = 0
     write_latencies: list[int] = field(default_factory=list)
 
-# one simulated worker/actor
 @dataclass(slots=True)
 class Agent:
+    """One simulated worker/actor."""
+
     agent_id: str
     cache: dict[ArtifactId, CacheEntry] = field(default_factory=dict)
     stats: AgentStats = field(default_factory=AgentStats)
 
-# coordination name space
 @dataclass(slots=True)
 class Task:
+    """Coordination namespace over agents and artifacts."""
+
     task_id: str
     agent_ids: list[str] # list of involved agents
     artifact_ids: list[ArtifactId] # list of involved artifacts
 
-# shared store
-# souece of truth for artifact versions
 @dataclass(slots=True)
 class GlobalMemory:
+    """Shared source of truth for committed artifact versions."""
+
     latency: int # fixed delay model used in read misses and write commits
     store: dict[ArtifactId, Artifact] = field(default_factory=dict)
 

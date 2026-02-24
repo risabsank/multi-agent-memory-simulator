@@ -130,17 +130,15 @@ class Simulator:
         )
 
     def _handle(self, event: Event) -> None:
-        if event.type == EventType.EV_READ_REQ:
-            self.protocol.on_read_req(self, event)
-        elif event.type == EventType.EV_READ_RESP:
-            self.protocol.on_read_resp(self, event)
-        elif event.type == EventType.EV_WRITE_REQ:
-            self.protocol.on_write_req(self, event)
-        elif event.type == EventType.EV_WRITE_COMMIT:
-            self.protocol.on_write_commit(self, event)
-        elif event.type == EventType.EV_CONFLICT_CHECK:
-            self.protocol.on_sync_req(self, event)
+        handlers = {
+            EventType.EV_READ_REQ: self.protocol.on_read_req,
+            EventType.EV_READ_RESP: self.protocol.on_read_resp,
+            EventType.EV_WRITE_REQ: self.protocol.on_write_req,
+            EventType.EV_WRITE_COMMIT: self.protocol.on_write_commit,
+            EventType.EV_CONFLICT_CHECK: self.protocol.on_sync_req,
+        }
+        handlers[event.type](self, event)
 
     @staticmethod
     def trace_line_type(t: int, event: str, detail: str, metadata: dict[str, object] | None = None) -> TraceLine:
-        return TraceLine(t, event, detail, metadata=metadata or {})
+        return TraceLine(t=t, event=event, detail=detail, metadata=metadata or {})

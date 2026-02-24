@@ -28,6 +28,12 @@ class ConsistencyProtocol(Protocol):
 
 class WriteThroughStrongProtocol:
     """Current write-through, strong consistency behavior."""
+    
+    @staticmethod
+    def _resolve_coherence_state(old_artifact: Artifact | None, confidence: float) -> CoherenceState:
+        if old_artifact and confidence < old_artifact.confidence:
+            return CoherenceState.CONTESTED
+        return CoherenceState.ACCEPTED
 
     def on_read_req(self, simulator: Simulator, event: Event) -> None:
         agent = simulator.agents[event.src]
@@ -126,16 +132,11 @@ class WriteThroughStrongProtocol:
 
         new_version = simulator.clock.next(artifact_id)
         old_artifact = simulator.global_memory.store.get(artifact_id)
-        scope = old_artifact.scope if old_artifact else ArtifactScope.TASK
-        
-        claim_type = old_artifact.claim_type if old_artifact else ClaimType.PLAN
-        provenance = agent.agent_id
-        confidence = float(event.payload.get("confidence", 0.8)) # confidence defaults to 0.8 only if caller didn't prvide one
-        coherence_state = CoherenceState.ACCEPTED
 
-        # if new confidence is less than old_artifact.confidence we say that it is contested
-        if old_artifact and confidence < old_artifact.confidence:
-            coherence_state = CoherenceState.CONTESTED
+        scope = old_artifact.scope if old_artifact else ArtifactScope.TASK
+        claim_type = old_artifact.claim_type if old_artifact else ClaimType.PLAN
+        confidence = float(event.payload.get("confidence", 0.8)) # confidence defaults to 0.8 only if caller didn't prvide one
+        coherence_state = self._resolve_coherence_state(old_artifact, confidence)
 
         agent.cache[artifact_id] = CacheEntry(
             artifact_id=artifact_id,
@@ -183,7 +184,7 @@ class WriteThroughStrongProtocol:
                 "size": size,
                 "scope": scope,
                 "claim_type": claim_type,
-                "provenance": provenance,
+                "provenance": agent.agent_id,
                 "confidence": confidence,
                 "coherence_state": coherence_state,
                 "observed_at": simulator.now,
@@ -218,6 +219,7 @@ class WriteThroughStrongProtocol:
             valid_at=event.payload["valid_at"],
         )
         simulator.global_memory.store[artifact_id] = artifact
+
         latency = simulator.now - int(event.payload["requested_t"])
         writer = simulator.agents[event.src]
         writer.stats.write_latency_total += latency
