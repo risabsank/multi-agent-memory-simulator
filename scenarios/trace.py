@@ -28,6 +28,7 @@ def run() -> None:
     sim.schedule_read(t=30, agent_id="B", artifact_id=("T1", "shared_plan"))
 
     result = sim.run()
+    
     print(f"Task {task.task_id}")
     print("Event trace:")
     for line in result.trace:
