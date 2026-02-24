@@ -10,6 +10,7 @@ class EventType(str, Enum):
     EV_READ_RESP = "EV_READ_RESP"
     EV_WRITE_REQ = "EV_WRITE_REQ"
     EV_WRITE_COMMIT = "EV_WRITE_COMMIT"
+    EV_CONFLICT_CHECK = "EV_CONFLICT_CHECK" # semantic validation can be modeled as deterministic event
 
 
 @dataclass(order=True, slots=True)

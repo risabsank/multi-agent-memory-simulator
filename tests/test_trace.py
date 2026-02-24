@@ -1,6 +1,6 @@
-from memory.model import Agent, Artifact, ArtifactScope, GlobalMemory
-from memory.simulator import Simulator
+from memory.model import Agent, Artifact, ArtifactScope, CoherenceState, GlobalMemory
 from memory.protocols import WriteThroughStrongProtocol
+from memory.simulator import Simulator
 
 
 def _build_scenario() -> tuple[Simulator, tuple[str, str]]:
@@ -31,6 +31,7 @@ def test_read_write_flow_and_versions() -> None:
     assert result.global_memory.store[artifact_id].version_id == 2
     assert result.agents["B"].cache[artifact_id].version_id == 2
     assert result.avg_latency("A") >= 0
+    assert result.avg_write_latency("A") >= 0
 
 def test_trace_behavior_matches_pre_refactor_expectations() -> None:
     sim, artifact_id = _build_scenario()
@@ -50,3 +51,24 @@ def test_trace_behavior_matches_pre_refactor_expectations() -> None:
         if line.event == "EV_READ_RESP"
     ]
     assert latencies == [3, 0, 3]
+
+def test_phase2_schema_and_observability_report() -> None:
+    sim, artifact_id = _build_scenario()
+
+    result = sim.run()
+    report = sim.build_report()
+
+    artifact = result.global_memory.store[artifact_id]
+    assert artifact.provenance == "A"
+    assert artifact.coherence_state in {CoherenceState.ACCEPTED, CoherenceState.CONTESTED}
+    assert artifact.claim_type.value == "fact"
+
+    conflict_events = [line for line in result.trace if line.event == "EV_CONFLICT_CHECK"]
+    assert len(conflict_events) == 1
+    assert conflict_events[0].metadata["artifact_id"] == artifact_id
+
+    assert report.conflict_checks == 1
+    assert report.cache_hits == 1
+    assert report.cache_misses == 2
+    assert report.avg_read_latency == 2.0
+    assert report.avg_write_latency == 3.0

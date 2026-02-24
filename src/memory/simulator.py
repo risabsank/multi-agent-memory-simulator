@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .events import Event, EventQueue, EventType
-from .model import Agent, Artifact, ArtifactId, CacheEntry, GlobalMemory, VersionClock
+from .model import Agent, ArtifactId, GlobalMemory, VersionClock
 from .protocols import ConsistencyProtocol, WriteThroughStrongProtocol
 
 
@@ -12,6 +12,7 @@ class TraceLine:
     t: int
     event: str
     detail: str
+    metadata: dict[str, object] = field(default_factory=dict) # structured analysis beyond log-string parsing
 
 
 @dataclass(slots=True)
@@ -25,6 +26,24 @@ class SimulationResult:
         if stats.read_count == 0:
             return 0.0
         return stats.read_latency_total / stats.read_count
+    
+    def avg_write_latency(self, agent_id: str) -> float:
+        stats = self.agents[agent_id].stats
+        if stats.write_count == 0:
+            return 0.0
+        return stats.write_latency_total / stats.write_count
+
+
+@dataclass(slots=True)
+class RunReport:
+    total_events: int
+    cache_hits: int
+    cache_misses: int
+    conflict_checks: int
+    contested_writes: int
+    accepted_writes: int
+    avg_read_latency: float
+    avg_write_latency: float
 
 
 class Simulator:
@@ -76,6 +95,38 @@ class Simulator:
             self._handle(event) # based on event type, perform an action
 
         return SimulationResult(trace=self.trace, agents=self.agents, global_memory=self.global_memory)
+    
+    def build_report(self) -> RunReport: # creates benchmark output aligned with protocol comparison goals
+        total_events = len(self.trace)
+        cache_hits = sum(1 for t in self.trace if t.event == "EV_CACHE_HIT")
+        cache_misses = sum(1 for t in self.trace if t.event == "EV_CACHE_MISS")
+        conflict_checks = sum(1 for t in self.trace if t.event == EventType.EV_CONFLICT_CHECK.value)
+        contested_writes = sum(
+            1
+            for t in self.trace
+            if t.event == "EV_WRITE_REQ" and t.metadata.get("coherence_state") == "contested"
+        )
+        accepted_writes = sum(
+            1
+            for t in self.trace
+            if t.event == "EV_WRITE_REQ" and t.metadata.get("coherence_state") == "accepted"
+        )
+
+        read_samples = [lat for a in self.agents.values() for lat in a.stats.read_latencies]
+        write_samples = [lat for a in self.agents.values() for lat in a.stats.write_latencies]
+        avg_read_latency = sum(read_samples) / len(read_samples) if read_samples else 0.0
+        avg_write_latency = sum(write_samples) / len(write_samples) if write_samples else 0.0
+
+        return RunReport(
+            total_events=total_events,
+            cache_hits=cache_hits,
+            cache_misses=cache_misses,
+            conflict_checks=conflict_checks,
+            contested_writes=contested_writes,
+            accepted_writes=accepted_writes,
+            avg_read_latency=avg_read_latency,
+            avg_write_latency=avg_write_latency,
+        )
 
     def _handle(self, event: Event) -> None:
         if event.type == EventType.EV_READ_REQ:
@@ -86,7 +137,9 @@ class Simulator:
             self.protocol.on_write_req(self, event)
         elif event.type == EventType.EV_WRITE_COMMIT:
             self.protocol.on_write_commit(self, event)
+        elif event.type == EventType.EV_CONFLICT_CHECK:
+            self.protocol.on_sync_req(self, event)
 
     @staticmethod
-    def trace_line_type(t: int, event: str, detail: str) -> TraceLine:
-        return TraceLine(t, event, detail)
+    def trace_line_type(t: int, event: str, detail: str, metadata: dict[str, object] | None = None) -> TraceLine:
+        return TraceLine(t, event, detail, metadata=metadata or {})

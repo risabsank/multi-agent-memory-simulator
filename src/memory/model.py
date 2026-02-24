@@ -10,6 +10,19 @@ class ArtifactScope(str, Enum):
     TASK = "task"
     GLOBAL = "global"
 
+# semantic enums
+class ClaimType(str, Enum):
+    FACT = "fact"
+    HYPOTHESIS = "hypothesis"
+    PLAN = "plan"
+    OBSERVATION = "observation"
+
+
+class CoherenceState(str, Enum):
+    ACCEPTED = "accepted" # usable as stable context
+    CONTESTED = "contested" # conflicting evidence exists
+    PROVISIONAL = "provisional" # low confidence or weak provenance
+    DEPRECATED = "deprecated" # deprecated
 
 ArtifactId = tuple[str, str] # (task_id, local_name)
 
@@ -20,6 +33,12 @@ class Artifact:
     version_id: int # tracks semantic evolution over time
     size: int
     scope: ArtifactScope
+    claim_type: ClaimType = ClaimType.FACT
+    provenance: str = "system"
+    confidence: float = 1.0
+    coherence_state: CoherenceState = CoherenceState.ACCEPTED
+    observed_at: int = 0
+    valid_at: int | None = None
 
 # artifact copy stored in an agent's local cache
 # working memory view for an agent
@@ -37,6 +56,10 @@ class AgentStats:
     misses: int = 0
     read_latency_total: int = 0
     read_count: int = 0
+    read_latencies: list[int] = field(default_factory=list)
+    write_latency_total: int = 0
+    write_count: int = 0
+    write_latencies: list[int] = field(default_factory=list)
 
 # one simulated worker/actor
 @dataclass(slots=True)
