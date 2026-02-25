@@ -30,7 +30,7 @@ A write is **coherent** iff it is either:
 
 ## 4) Hypothesis and objective
 ### Primary hypothesis
-Semantic coherence improves reliability under bounded latency and cost.
+Improve decision reliability while keeping latency and operational complexity low enough to run continuously.
 
 ### Objective function
 Evaluate each protocol using a weighted score over:
@@ -99,33 +99,67 @@ Violation cases:
 
 ---
 
-## 8) Recovery success criteria
-Recovery is successful if, within bounded latency and cost, the system achieves:
-- no unresolved contradictions,
-- selected memory aligns with ground-truth oracle above threshold,
-- bounded blast radius from wrong memory,
-- contested hypotheses resolved or quarantined.
+## 8) Working semantic coherence system (no recovery protocol)
+This system treats coherence as a **continuous write/read policy**, not as a separate recovery phase.
+
+### 8.1 Components
+- **Memory object model**
+  - pairwise contradiction checks in §6.1
+- **Coherence state machine**
+  - allowed states: `provisional`, `accepted`, `contested`, `deprecated`
+- **Policy gate**
+  - deterministic decisions for write admission and state transitions
+- **Retrieval filter**
+  - task-aware ranking that suppresses unsafe or incoherent claims
+
+### 8.2 Write path
+For each incoming item `m_new`:
+1. Validate required schema fields.
+2. Retrieve overlapping-scope candidates from accepted + provisional memory.
+3. Run contradiction detection.
+4. Score credibility using provenance, confidence, and freshness.
+5. Apply policy:
+   - **No contradiction + min credibility** → `accepted`
+   - **Contradiction + insufficient dominance** → `contested`
+   - **Contradiction + strong dominance** → `accepted`, conflicting weaker items → `deprecated`
+   - **Low support / malformed** → reject write
+
+### 8.3 Read path
+When serving context to agents:
+1. Filter out `deprecated` items.
+2. Include `accepted` first.
+3. Include `provisional` only if relevant and clearly marked.
+4. Include `contested` only when task requires uncertainty handling.
+5. Block unsafe-to-act directives unless explicitly safety-approved.
+
+### 8.4 Deterministic transition rules
+- `provisional -> accepted`: passes contradiction + credibility policy.
+- `accepted -> contested`: new conflicting peer with comparable credibility.
+- `accepted -> deprecated`: superseded by stronger evidence or staleness trigger.
+- `contested -> accepted`: tie broken by verification evidence or policy threshold.
+- `contested -> deprecated`: loses comparison after new evidence.
+
+Transitions must be auditable with reason codes (`contradiction`, `stale`, `superseded`, `low_support`, `safety_block`).
+
+### 8.5 Minimum policy defaults
+- Require contradiction checks on all write operations touching shared scope.
+- Never auto-overwrite `accepted` with lower-credibility claims.
+- Preserve competing hypotheses as `contested` instead of dropping them.
+- Disallow action recommendations sourced only from `contested` memory.
 
 ---
 
-## 9) Protocol components
-- **Memory object model update**
-- **Semantic conflict detector**
-- **Coherence states**
-- **Conflict-resolution policy engine**
-- **Retrieval-time coherence filtering**
+## 9) Acceptance criteria
+The system is considered operational when:
+- contradiction-bearing writes are never silently committed as `accepted`;
+- all committed items have explicit coherence state;
+- retrieval omits unsafe directives lacking accepted support;
+- p95 write-latency overhead from coherence checks stays within configured budget;
+- audit logs allow replay of every state transition decision.
 
 ---
 
-## 10) Protocol variants to evaluate
-- **S0: No semantic coherence**
-  - baseline behavior
-- **S1: Detect-only**
-  - flag contested claims, do not block writes
-- **S2: Soft gating**
-  - downweight contested claims unless highly task-relevant
-- **S3: Hard gating + verification**
-  - block contested claims from accepted shared memory until verification approval
-- **S4: Adaptive semantic coherence**
-  - dynamically switch policy strength using reliability/latency/cost feedback
-
+## 10) Deployment profile
+- **Default profile**: soft gating with deterministic contesting and retrieval filtering.
+- **High-risk profile**: hard gating for action-bearing claims.
+- **Low-latency profile**: detect-only fallback with explicit reliability warning.
