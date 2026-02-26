@@ -27,7 +27,11 @@ class ConsistencyProtocol(Protocol):
 
 
 class WriteThroughStrongProtocol:
-    """Current write-through, strong consistency behavior."""
+    """Current write-through, strong consistency behavior.
+    Every read miss go to global and every write becomes globally visible after a fixed latency window.
+    Caches are kept coherent because global is updated quickly and reads don't
+    intentionally prefer a stale local state.
+    """
     
     @staticmethod
     def _resolve_coherence_state(old_artifact: Artifact | None, confidence: float) -> CoherenceState:
@@ -266,6 +270,7 @@ class EventualProtocol:
     Reads always prefer the local cache. Writes become visible immediately to the
     writing agent's cache, then propagate to global memory later via
     ``EV_CONFLICT_CHECK`` and ``EV_WRITE_COMMIT``.
+    Possible to observer stale reads until propagation completes.
     """
 
     def __init__(self, propagation_delay: int = 2) -> None:
@@ -346,6 +351,7 @@ class EventualProtocol:
             },
         )
 
+    # behaves the same as the Strong protocol
     def on_read_resp(self, simulator: Simulator, event: Event) -> None:
         agent = simulator.agents[event.dst]
         artifact_id = tuple(event.payload["artifact_id"])
@@ -389,14 +395,13 @@ class EventualProtocol:
         size = int(event.payload["size"])
         requested_t = int(event.payload["requested_t"])
 
-    def on_write_commit(self, simulator: Simulator, event: Event) -> None:
         new_version = simulator.clock.next(artifact_id)
         old_artifact = simulator.global_memory.store.get(artifact_id)
         scope = old_artifact.scope if old_artifact else ArtifactScope.TASK
         claim_type = old_artifact.claim_type if old_artifact else ClaimType.PLAN
         confidence = float(event.payload.get("confidence", 0.8))
 
-        # Write is immediately visible locally but not globally committed yet.
+        # Write is immediately visible locally but not globally committed yet
         agent.cache[artifact_id] = CacheEntry(
             artifact_id=artifact_id,
             version_id=new_version,
@@ -420,7 +425,8 @@ class EventualProtocol:
             )
         )
 
-        # The sync/check event represents asynchronous dissemination.
+        # does not schedule the commit write away
+        # adds propagation delay to the latency
         simulator.queue.push(
             t=simulator.now + simulator.global_memory.latency * self.propagation_delay,
             event_type=EventType.EV_CONFLICT_CHECK,

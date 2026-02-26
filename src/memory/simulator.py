@@ -8,7 +8,7 @@ from .protocols import ConsistencyProtocol, WriteThroughStrongProtocol
 
 # structured execution log entry for each simulation step
 # acts as an event journal
-@dataclass(slots=True)
+@dataclass
 class TraceLine:
     t: int # simulation time
     event: str # event label
@@ -16,7 +16,7 @@ class TraceLine:
     metadata: dict[str, object] = field(default_factory=dict) # context
 
 
-@dataclass(slots=True)
+@dataclass
 class SimulationResult:
     trace: list[TraceLine] = field(default_factory=list)
     agents: dict[str, Agent] = field(default_factory=dict)
@@ -35,7 +35,7 @@ class SimulationResult:
         return stats.write_latency_total / stats.write_count
 
 
-@dataclass(slots=True)
+@dataclass
 class RunReport:
     total_events: int
     cache_hits: int

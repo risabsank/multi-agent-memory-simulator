@@ -32,7 +32,7 @@ class CoherenceState(str, Enum):
 
 ArtifactId = tuple[str, str] # (task_id, local_name)
 
-@dataclass(slots=True)
+@dataclass
 class Artifact:
     """Logical memory unit read/written by agents."""
 
@@ -47,7 +47,7 @@ class Artifact:
     observed_at: int = 0 # point at which artifact was observed
     valid_at: int | None = None # timestamp at which the artifact is valid
 
-@dataclass(slots=True)
+@dataclass
 class CacheEntry:
     """Artifact copy stored in an agent's local cache."""
     
@@ -57,7 +57,7 @@ class CacheEntry:
     last_access_t: int
 
 
-@dataclass(slots=True)
+@dataclass
 class AgentStats:
     hits: int = 0
     misses: int = 0
@@ -68,7 +68,7 @@ class AgentStats:
     write_count: int = 0
     write_latencies: list[int] = field(default_factory=list)
 
-@dataclass(slots=True)
+@dataclass
 class Agent:
     """One simulated worker/actor."""
 
@@ -76,7 +76,7 @@ class Agent:
     cache: dict[ArtifactId, CacheEntry] = field(default_factory=dict)
     stats: AgentStats = field(default_factory=AgentStats)
 
-@dataclass(slots=True)
+@dataclass
 class Task:
     """Coordination namespace over agents and artifacts."""
 
@@ -84,7 +84,7 @@ class Task:
     agent_ids: list[str] # list of involved agents
     artifact_ids: list[ArtifactId] # list of involved artifacts
 
-@dataclass(slots=True)
+@dataclass
 class GlobalMemory:
     """Shared source of truth for committed artifact versions."""
 

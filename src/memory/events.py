@@ -13,7 +13,7 @@ class EventType(str, Enum):
     EV_CONFLICT_CHECK = "EV_CONFLICT_CHECK" # semantic validation can be modeled as deterministic event
 
 
-@dataclass(order=True, slots=True)
+@dataclass(order=True)
 class Event:
     t: int # scheduled simulation time
     eid: int # unique event id
