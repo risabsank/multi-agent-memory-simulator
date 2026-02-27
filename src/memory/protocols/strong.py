@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from ..events import Event, EventType
 from ..model import Artifact, ArtifactScope, CacheEntry, ClaimType, CoherenceState
+from .judges import ConflictJudge, DeterministicConflictJudge
 
 if TYPE_CHECKING:
     from ..simulator import Simulator
@@ -11,6 +12,9 @@ if TYPE_CHECKING:
 
 class WriteThroughStrongProtocol:
     """Current write-through, strong consistency behavior."""
+
+    def __init__(self, conflict_judge: ConflictJudge | None = None) -> None:
+        self.conflict_judge = conflict_judge or DeterministicConflictJudge()
 
     @staticmethod
     def _resolve_coherence_state(old_artifact: Artifact | None, confidence: float) -> CoherenceState:
@@ -227,17 +231,28 @@ class WriteThroughStrongProtocol:
 
     def on_sync_req(self, simulator: Simulator, event: Event) -> None:
         artifact_id = tuple(event.payload["artifact_id"])
+
+        # Retrieve the currently accepted artifact
+        previous = simulator.global_memory.store.get(artifact_id)
+        confidence = float(event.payload["confidence"])  # Extract the candidate write's confidence score from the event.
+        # conflict resolution policy
+        decision = self.conflict_judge.judge(
+            previous=previous,
+            candidate_confidence=confidence,
+            candidate_payload=event.payload,
+        )
+
         simulator.trace.append(
             simulator.trace_line_type(
                 simulator.now,
                 EventType.EV_CONFLICT_CHECK.value,
-                f"checked {artifact_id} coherence={event.payload['coherence_state']}",
+                f"checked {artifact_id} coherence={decision.coherence_state.value}",
                 metadata={
                     "artifact_id": artifact_id,
-                    "coherence_state": event.payload["coherence_state"],
+                    **decision.to_metadata(),
                     "new_version": event.payload["new_version"],
                     "old_version": event.payload["old_version"],
-                    "confidence": event.payload["confidence"],
+                    "confidence": confidence,
                 },
             )
         )

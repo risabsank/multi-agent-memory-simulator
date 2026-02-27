@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from ..events import Event, EventType
 from ..model import Artifact, ArtifactScope, CacheEntry, ClaimType, CoherenceState
+from .judges import ConflictJudge, DeterministicConflictJudge
 
 if TYPE_CHECKING:
     from ..simulator import Simulator
@@ -17,8 +18,9 @@ class EventualProtocol:
     ``EV_CONFLICT_CHECK`` and ``EV_WRITE_COMMIT``.
     """
 
-    def __init__(self, propagation_delay: int = 2) -> None:
+    def __init__(self, propagation_delay: int = 2, conflict_judge: ConflictJudge | None = None) -> None: #
         self.propagation_delay = max(1, propagation_delay)
+        self.conflict_judge = conflict_judge or DeterministicConflictJudge() 
 
     @staticmethod
     def _resolve_commit_state(old_artifact: Artifact | None, confidence: float) -> CoherenceState:
@@ -183,7 +185,13 @@ class EventualProtocol:
         artifact_id = tuple(event.payload["artifact_id"])
         confidence = float(event.payload["confidence"])
         previous = simulator.global_memory.store.get(artifact_id)
-        coherence_state = self._resolve_commit_state(previous, confidence)
+        
+        # make a decision based on the confidence score
+        decision = self.conflict_judge.judge(
+            previous=previous,
+            candidate_confidence=confidence,
+            candidate_payload=event.payload,
+        )
 
         simulator.trace.append(
             simulator.trace_line_type(
@@ -194,7 +202,7 @@ class EventualProtocol:
                     "artifact_id": artifact_id,
                     "new_version": event.payload["version_id"],
                     "old_version": event.payload["old_version"],
-                    "coherence_state": coherence_state.value,
+                    **decision.to_metadata(),
                     "confidence": confidence,
                     "delayed_propagation": True,
                 },
@@ -214,7 +222,7 @@ class EventualProtocol:
                 "claim_type": event.payload["claim_type"],
                 "provenance": event.payload["provenance"],
                 "confidence": confidence,
-                "coherence_state": coherence_state,
+                "coherence_state": decision.coherence_state,
                 "observed_at": event.payload["observed_at"],
                 "valid_at": event.payload["valid_at"],
                 "requested_t": event.payload["requested_t"],
