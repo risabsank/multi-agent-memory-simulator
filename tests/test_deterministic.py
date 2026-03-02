@@ -1,6 +1,19 @@
-from memory.model import Agent, Artifact, ArtifactScope, GlobalMemory
-from memory.protocols import DeterministicConflictJudge, EventualProtocol, WriteThroughStrongProtocol
+from memory.model import Agent, Artifact, ArtifactScope, CoherenceState, GlobalMemory
+from memory.protocols import ConflictDecision, DeterministicConflictJudge, EventualProtocol, WriteThroughStrongProtocol
 from memory.simulator import Simulator
+
+
+class DeprecatedJudge:
+    def judge(self, *, previous, candidate_confidence: float, candidate_payload: dict) -> ConflictDecision:
+        return ConflictDecision(
+            coherence_state=CoherenceState.DEPRECATED,
+            reason_codes=["manual_override"],
+            confidence_delta=0.0,
+            provider="test",
+            model="override",
+            prompt_version="test_v1",
+            prompt_hash="abc123",
+        )
 
 
 def test_deterministic_conflict_judge_parity_states() -> None:
@@ -52,6 +65,7 @@ def test_strong_protocol_conflict_check_has_judge_audit_metadata() -> None:
     conflict_event = next(line for line in result.trace if line.event == "EV_CONFLICT_CHECK")
     assert conflict_event.metadata["judge_provider"] == "deterministic"
     assert conflict_event.metadata["judge_model"] == "rule_engine_v1"
+    assert conflict_event.metadata["provider"] == "deterministic"
     assert isinstance(conflict_event.metadata["reason_codes"], list)
 
 
@@ -73,15 +87,15 @@ def test_eventual_protocol_uses_judge_for_sync_decision() -> None:
     sim = Simulator(
         agents=[Agent("A")],
         global_memory=global_memory,
-        protocol=EventualProtocol(propagation_delay=1),
+        protocol=EventualProtocol(propagation_delay=1, conflict_judge=DeprecatedJudge()),
     )
     sim.schedule_write(t=0, agent_id="A", artifact_id=artifact_id, size=20)
     result = sim.run()
 
     conflict_event = next(line for line in result.trace if line.event == "EV_CONFLICT_CHECK")
-    assert conflict_event.metadata["judge_provider"] == "deterministic"
-    assert conflict_event.metadata["judge_prompt_version"] == "deterministic_v1"
-    assert conflict_event.metadata["reason_codes"] in (["no_contradiction"], ["lower_confidence_than_accepted"])
+    assert conflict_event.metadata["judge_provider"] == "test"
+    assert conflict_event.metadata["judge_prompt_version"] == "test_v1"
+    assert conflict_event.metadata["reason_codes"] == ["manual_override"]
 
     committed = result.global_memory.store[artifact_id]
-    assert committed.coherence_state.value in {"accepted", "contested", "deprecated"}
+    assert committed.coherence_state == CoherenceState.DEPRECATED

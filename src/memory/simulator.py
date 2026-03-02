@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 from .events import Event, EventQueue, EventType
@@ -45,6 +46,11 @@ class RunReport:
     accepted_writes: int
     avg_read_latency: float
     avg_write_latency: float
+    judge_provider_breakdown: dict[str, int] = field(default_factory=dict)
+    fallback_count: int = 0
+    llm_failure_categories: dict[str, int] = field(default_factory=dict)
+    reason_code_counts: dict[str, int] = field(default_factory=dict)
+    avg_judge_latency: float | None = None
 
 
 class Simulator:
@@ -118,6 +124,41 @@ class Simulator:
         avg_read_latency = sum(read_samples) / len(read_samples) if read_samples else 0.0
         avg_write_latency = sum(write_samples) / len(write_samples) if write_samples else 0.0
 
+        # filter for conflict check metadata
+        conflict_metadata = [
+            t.metadata for t in self.trace if t.event == EventType.EV_CONFLICT_CHECK.value
+        ]
+
+        # specifies whether we are using LLM or deterministic fallback judge
+        provider_counter = Counter(
+            str(m.get("provider") or m.get("judge_provider"))
+            for m in conflict_metadata
+            if (m.get("provider") or m.get("judge_provider")) is not None
+        )
+        fallback_count = sum(1 for m in conflict_metadata if bool(m.get("fallback_used") or m.get("judge_fallback_used")))
+
+        # breaks down LLM failure distribution
+        failure_counter = Counter()
+        for m in conflict_metadata:
+            warning = m.get("warning") or m.get("judge_warning")
+            if isinstance(warning, str) and warning:
+                failure_counter[warning] += 1
+
+        # how often each decision reason was invoked
+        reason_counter = Counter()
+        for m in conflict_metadata:
+            for reason in m.get("reason_codes", []):
+                reason_counter[str(reason)] += 1
+
+        latency_samples = [
+            float(m["judge_latency_ms"])
+            for m in conflict_metadata
+            if isinstance(m.get("judge_latency_ms"), (int, float))
+        ]
+
+        # latency contributed by judge
+        avg_judge_latency = sum(latency_samples) / len(latency_samples) if latency_samples else None
+
         return RunReport(
             total_events=total_events,
             cache_hits=cache_hits,
@@ -127,6 +168,11 @@ class Simulator:
             accepted_writes=accepted_writes,
             avg_read_latency=avg_read_latency,
             avg_write_latency=avg_write_latency,
+            judge_provider_breakdown=dict(provider_counter),
+            fallback_count=fallback_count,
+            llm_failure_categories=dict(failure_counter),
+            reason_code_counts=dict(reason_counter),
+            avg_judge_latency=avg_judge_latency,
         )
 
     def _handle(self, event: Event) -> None:

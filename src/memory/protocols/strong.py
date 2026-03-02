@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ..events import Event, EventType
 from ..model import Artifact, ArtifactScope, CacheEntry, ClaimType, CoherenceState
-from .judges import ConflictJudge, DeterministicConflictJudge
+from .judges import ConflictJudge, build_conflict_judge
 
 if TYPE_CHECKING:
     from ..simulator import Simulator
@@ -13,8 +13,23 @@ if TYPE_CHECKING:
 class WriteThroughStrongProtocol:
     """Current write-through, strong consistency behavior."""
 
-    def __init__(self, conflict_judge: ConflictJudge | None = None) -> None:
-        self.conflict_judge = conflict_judge or DeterministicConflictJudge()
+    def __init__(
+        self,
+        conflict_judge: ConflictJudge | None = None,
+        *,
+        judge_mode: str = "deterministic",
+        llm_inference_fn: Callable[[str], str] | None = None,
+        llm_provider: str = "llm",
+        llm_model: str = "unknown",
+        llm_timeout_s: float = 0.25,
+    ) -> None:
+        self.conflict_judge = conflict_judge or build_conflict_judge(
+            judge_mode=judge_mode,
+            llm_inference_fn=llm_inference_fn,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            llm_timeout_s=llm_timeout_s,
+        )
 
     @staticmethod
     def _resolve_coherence_state(old_artifact: Artifact | None, confidence: float) -> CoherenceState:

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ..events import Event, EventType
 from ..model import Artifact, ArtifactScope, CacheEntry, ClaimType, CoherenceState
-from .judges import ConflictJudge, DeterministicConflictJudge
+from .judges import ConflictJudge, build_conflict_judge
 
 if TYPE_CHECKING:
     from ..simulator import Simulator
@@ -18,9 +18,25 @@ class EventualProtocol:
     ``EV_CONFLICT_CHECK`` and ``EV_WRITE_COMMIT``.
     """
 
-    def __init__(self, propagation_delay: int = 2, conflict_judge: ConflictJudge | None = None) -> None: #
+    def __init__(
+        self,
+        propagation_delay: int = 2,
+        conflict_judge: ConflictJudge | None = None,
+        *,
+        judge_mode: str = "deterministic",
+        llm_inference_fn: Callable[[str], str] | None = None,
+        llm_provider: str = "llm",
+        llm_model: str = "unknown",
+        llm_timeout_s: float = 0.25,
+    ) -> None:
         self.propagation_delay = max(1, propagation_delay)
-        self.conflict_judge = conflict_judge or DeterministicConflictJudge() 
+        self.conflict_judge = conflict_judge or build_conflict_judge(
+            judge_mode=judge_mode,
+            llm_inference_fn=llm_inference_fn,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            llm_timeout_s=llm_timeout_s,
+        )
 
     @staticmethod
     def _resolve_commit_state(old_artifact: Artifact | None, confidence: float) -> CoherenceState:
@@ -185,6 +201,11 @@ class EventualProtocol:
         artifact_id = tuple(event.payload["artifact_id"])
         confidence = float(event.payload["confidence"])
         previous = simulator.global_memory.store.get(artifact_id)
+        decision = self.conflict_judge.judge(
+            previous=previous,
+            candidate_confidence=confidence,
+            candidate_payload=event.payload,
+        )
         
         # make a decision based on the confidence score
         decision = self.conflict_judge.judge(
