@@ -16,6 +16,7 @@ class WriteThroughStrongProtocol:
     def __init__(
         self,
         conflict_judge: ConflictJudge | None = None,
+        auto_invalidate_on_commit: bool = False,
         *,
         judge_mode: str = "deterministic",
         llm_inference_fn: Callable[[str], str] | None = None,
@@ -30,6 +31,7 @@ class WriteThroughStrongProtocol:
             llm_model=llm_model,
             llm_timeout_s=llm_timeout_s,
         )
+        self.auto_invalidate_on_commit = auto_invalidate_on_commit
 
     @staticmethod
     def _resolve_coherence_state(old_artifact: Artifact | None, confidence: float) -> CoherenceState:
@@ -91,6 +93,18 @@ class WriteThroughStrongProtocol:
                 "read_source": "global",
             },
         )
+
+        if self.auto_invalidate_on_commit:
+            for agent_id in simulator.agents:
+                if agent_id == event.src:
+                    continue
+                simulator.queue.push(
+                    t=simulator.now,
+                    event_type=EventType.EV_INVALIDATE,
+                    src="global",
+                    dst=agent_id,
+                    payload={"artifact_id": artifact_id, "reason": "write_commit"},
+                )
 
     def on_read_resp(self, simulator: Simulator, event: Event) -> None:
         agent = simulator.agents[event.dst]
@@ -245,6 +259,36 @@ class WriteThroughStrongProtocol:
         )
 
     def on_sync_req(self, simulator: Simulator, event: Event) -> None:
+        if event.type == EventType.EV_SYNC_REQ:
+            agent = simulator.agents[event.src]
+            artifact_id = tuple(event.payload["artifact_id"])
+            if artifact_id not in simulator.global_memory.store:
+                return
+
+            artifact = simulator.global_memory.store[artifact_id]
+            local_entry = agent.cache.get(artifact_id)
+            stale_before = local_entry.version_id if local_entry else None
+            agent.cache[artifact_id] = CacheEntry(
+                artifact_id=artifact_id,
+                version_id=artifact.version_id,
+                size=artifact.size,
+                last_access_t=simulator.now,
+            )
+            simulator.trace.append(
+                simulator.trace_line_type(
+                    simulator.now,
+                    EventType.EV_SYNC_REQ.value,
+                    f"{agent.agent_id} synced {artifact_id} to v{artifact.version_id}",
+                    metadata={
+                        "agent": agent.agent_id,
+                        "artifact_id": artifact_id,
+                        "version_id": artifact.version_id,
+                        "stale_before": stale_before,
+                    },
+                )
+            )
+            return
+
         artifact_id = tuple(event.payload["artifact_id"])
 
         # Retrieve the currently accepted artifact
@@ -268,6 +312,25 @@ class WriteThroughStrongProtocol:
                     "new_version": event.payload["new_version"],
                     "old_version": event.payload["old_version"],
                     "confidence": confidence,
+                },
+            )
+        )
+
+    def on_invalidate_req(self, simulator: Simulator, event: Event) -> None:
+        agent = simulator.agents[event.dst]
+        artifact_id = tuple(event.payload["artifact_id"])
+        entry = agent.cache.pop(artifact_id, None)
+        simulator.trace.append(
+            simulator.trace_line_type(
+                simulator.now,
+                EventType.EV_INVALIDATE.value,
+                f"{agent.agent_id} invalidated {artifact_id}",
+                metadata={
+                    "agent": agent.agent_id,
+                    "artifact_id": artifact_id,
+                    "had_entry": entry is not None,
+                    "invalidated_version": entry.version_id if entry else None,
+                    "reason": event.payload.get("reason", "unknown"),
                 },
             )
         )

@@ -22,6 +22,7 @@ class EventualProtocol:
         self,
         propagation_delay: int = 2,
         conflict_judge: ConflictJudge | None = None,
+        auto_invalidate_on_commit: bool = False,
         *,
         judge_mode: str = "deterministic",
         llm_inference_fn: Callable[[str], str] | None = None,
@@ -30,6 +31,7 @@ class EventualProtocol:
         llm_timeout_s: float = 0.25,
     ) -> None:
         self.propagation_delay = max(1, propagation_delay)
+        self.auto_invalidate_on_commit = auto_invalidate_on_commit
         self.conflict_judge = conflict_judge or build_conflict_judge(
             judge_mode=judge_mode,
             llm_inference_fn=llm_inference_fn,
@@ -198,16 +200,39 @@ class EventualProtocol:
         )
 
     def on_sync_req(self, simulator: Simulator, event: Event) -> None:
+        if event.type == EventType.EV_SYNC_REQ:
+            agent = simulator.agents[event.src]
+            artifact_id = tuple(event.payload["artifact_id"])
+            if artifact_id not in simulator.global_memory.store:
+                return
+
+            artifact = simulator.global_memory.store[artifact_id]
+            local_entry = agent.cache.get(artifact_id)
+            stale_before = local_entry.version_id if local_entry else None
+            agent.cache[artifact_id] = CacheEntry(
+                artifact_id=artifact_id,
+                version_id=artifact.version_id,
+                size=artifact.size,
+                last_access_t=simulator.now,
+            )
+            simulator.trace.append(
+                simulator.trace_line_type(
+                    simulator.now,
+                    EventType.EV_SYNC_REQ.value,
+                    f"{agent.agent_id} synced {artifact_id} to v{artifact.version_id}",
+                    metadata={
+                        "agent": agent.agent_id,
+                        "artifact_id": artifact_id,
+                        "version_id": artifact.version_id,
+                        "stale_before": stale_before,
+                    },
+                )
+            )
+            return
+
         artifact_id = tuple(event.payload["artifact_id"])
         confidence = float(event.payload["confidence"])
         previous = simulator.global_memory.store.get(artifact_id)
-        decision = self.conflict_judge.judge(
-            previous=previous,
-            candidate_confidence=confidence,
-            candidate_payload=event.payload,
-        )
-        
-        # make a decision based on the confidence score
         decision = self.conflict_judge.judge(
             previous=previous,
             candidate_confidence=confidence,
@@ -248,6 +273,25 @@ class EventualProtocol:
                 "valid_at": event.payload["valid_at"],
                 "requested_t": event.payload["requested_t"],
             },
+        )
+    
+    def on_invalidate_req(self, simulator: Simulator, event: Event) -> None:
+        agent = simulator.agents[event.dst]
+        artifact_id = tuple(event.payload["artifact_id"])
+        entry = agent.cache.pop(artifact_id, None)
+        simulator.trace.append(
+            simulator.trace_line_type(
+                simulator.now,
+                EventType.EV_INVALIDATE.value,
+                f"{agent.agent_id} invalidated {artifact_id}",
+                metadata={
+                    "agent": agent.agent_id,
+                    "artifact_id": artifact_id,
+                    "had_entry": entry is not None,
+                    "invalidated_version": entry.version_id if entry else None,
+                    "reason": event.payload.get("reason", "unknown"),
+                },
+            )
         )
 
     def on_write_commit(self, simulator: Simulator, event: Event) -> None:
@@ -299,3 +343,15 @@ class EventualProtocol:
                 },
             )
         )
+
+        if self.auto_invalidate_on_commit:
+            for agent_id in simulator.agents:
+                if agent_id == event.src:
+                    continue
+                simulator.queue.push(
+                    t=simulator.now,
+                    event_type=EventType.EV_INVALIDATE,
+                    src="global",
+                    dst=agent_id,
+                    payload={"artifact_id": artifact_id, "reason": "write_commit"},
+                )

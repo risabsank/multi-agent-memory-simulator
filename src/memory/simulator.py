@@ -51,6 +51,8 @@ class RunReport:
     llm_failure_categories: dict[str, int] = field(default_factory=dict)
     reason_code_counts: dict[str, int] = field(default_factory=dict)
     avg_judge_latency: float | None = None
+    sync_requests: int = 0
+    invalidations: int = 0
 
 
 class Simulator:
@@ -94,6 +96,24 @@ class Simulator:
             dst=agent_id,
             payload={"artifact_id": artifact_id, "size": size, "requested_t": t},
         )
+    
+    def schedule_sync(self, t: int, agent_id: str, artifact_id: ArtifactId) -> None:
+        self.queue.push(
+            t=t,
+            event_type=EventType.EV_SYNC_REQ,
+            src=agent_id,
+            dst="global",
+            payload={"artifact_id": artifact_id, "requested_t": t},
+        )
+
+    def schedule_invalidate(self, t: int, agent_id: str, artifact_id: ArtifactId, reason: str = "manual") -> None:
+        self.queue.push(
+            t=t,
+            event_type=EventType.EV_INVALIDATE,
+            src="global",
+            dst=agent_id,
+            payload={"artifact_id": artifact_id, "reason": reason},
+        )
 
     def run(self) -> SimulationResult:
         while len(self.queue) > 0: # while queue not empry
@@ -108,6 +128,10 @@ class Simulator:
         cache_hits = sum(1 for t in self.trace if t.event == "EV_CACHE_HIT")
         cache_misses = sum(1 for t in self.trace if t.event == "EV_CACHE_MISS")
         conflict_checks = sum(1 for t in self.trace if t.event == EventType.EV_CONFLICT_CHECK.value)
+
+        sync_requests = sum(1 for t in self.trace if t.event == EventType.EV_SYNC_REQ.value)
+        invalidations = sum(1 for t in self.trace if t.event == EventType.EV_INVALIDATE.value)
+
         contested_writes = sum(
             1
             for t in self.trace
@@ -173,6 +197,8 @@ class Simulator:
             llm_failure_categories=dict(failure_counter),
             reason_code_counts=dict(reason_counter),
             avg_judge_latency=avg_judge_latency,
+            sync_requests=sync_requests,
+            invalidations=invalidations,
         )
 
     def _handle(self, event: Event) -> None:
@@ -182,6 +208,8 @@ class Simulator:
             EventType.EV_WRITE_REQ: self.protocol.on_write_req,
             EventType.EV_WRITE_COMMIT: self.protocol.on_write_commit,
             EventType.EV_CONFLICT_CHECK: self.protocol.on_sync_req,
+            EventType.EV_SYNC_REQ: self.protocol.on_sync_req,
+            EventType.EV_INVALIDATE: self.protocol.on_invalidate_req,
         }
         handlers[event.type](self, event)
 
