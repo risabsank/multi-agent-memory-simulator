@@ -1,21 +1,27 @@
-from memory.model import Agent, Artifact, ArtifactScope, GlobalMemory, Task
+from memory.lib import human2bytes
+from memory.model import Agent, GlobalMemory, Task, Artifact, ArtifactScope
 from memory.protocols import WriteThroughStrongProtocol
 from memory.simulator import Simulator
 
 
 def run() -> None:
-    task = Task(task_id="T1", agent_ids=["A", "B"], artifact_ids=[("T1", "shared_plan")])
-    global_memory = GlobalMemory(
-        latency=5,
-        store={
-            ("T1", "shared_plan"): Artifact(
-                artifact_id=("T1", "shared_plan"),
-                version_id=1,
-                size=1024,
-                scope=ArtifactScope.TASK,
-            )
-        },
+    task = Task(
+        task_id="T1", agent_ids=["A", "B"], artifact_ids=[("T1", "shared_plan")]
     )
+    global_memory = GlobalMemory(
+        read_latency=5,
+        write_latency=5,
+        swap_latency=100,
+        total_size=human2bytes("1gb"),
+        block_size=4096,
+    )
+    artifact = Artifact(
+        artifact_id=("T1", "shared_plan"),
+        version_id=1,
+        size=1024,
+        scope=ArtifactScope.TASK,
+    )
+    global_memory.store_artifact(artifact)
 
     sim = Simulator(
         agents=[Agent("A"), Agent("B")],
@@ -53,7 +59,8 @@ def run() -> None:
         f"avg_write_latency={report.avg_write_latency:.2f}"
     )
 
-    final_artifact = result.global_memory.store[("T1", "shared_plan")]
+    assert result.global_memory is not None
+    final_artifact = result.global_memory.get_artifact(("T1", "shared_plan"))
     print(
         f"final_version(shared_plan)={final_artifact.version_id} "
         f"coherence={final_artifact.coherence_state.value} "

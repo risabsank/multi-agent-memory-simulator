@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+from typing import Any, Iterable
 
 from .events import Event, EventQueue, EventType
 from .model import Agent, ArtifactId, GlobalMemory, VersionClock
@@ -14,7 +15,7 @@ class TraceLine:
     t: int # simulation time
     event: str # event label
     detail: str # summary
-    metadata: dict[str, object] = field(default_factory=dict) # context
+    metadata: dict[str, object | Iterable[Any]] = field(default_factory=dict) # context
 
 
 @dataclass
@@ -73,7 +74,7 @@ class Simulator:
         self.queue = EventQueue()
         self.protocol = protocol or WriteThroughStrongProtocol()
         self.clock = VersionClock()
-        for artifact_id, artifact in self.global_memory.store.items():
+        for artifact_id, artifact in self.global_memory.get_all_artifacts():
             self.clock._versions[artifact_id] = artifact.version_id
 
         self.now = 0
@@ -171,11 +172,13 @@ class Simulator:
         # how often each decision reason was invoked
         reason_counter = Counter()
         for m in conflict_metadata:
-            for reason in m.get("reason_codes", []):
+            reason_codes = m.get("reason_codes", [])
+            assert isinstance(reason_codes, Iterable)
+            for reason in reason_codes:
                 reason_counter[str(reason)] += 1
 
         latency_samples = [
-            float(m["judge_latency_ms"])
+            float(m["judge_latency_ms"])  # type: ignore[reportArgumentType]
             for m in conflict_metadata
             if isinstance(m.get("judge_latency_ms"), (int, float))
         ]
