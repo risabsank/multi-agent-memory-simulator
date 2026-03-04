@@ -18,7 +18,7 @@ class TraceLine:
 class SimulationResult:
     trace: list[TraceLine] = field(default_factory=list)
     agents: dict[str, Agent] = field(default_factory=dict)
-    global_memory: GlobalMemory | None = None
+    model: GlobalMemory | None = None
 
     def avg_latency(self, agent_id: str) -> float:
         stats = self.agents[agent_id].stats
@@ -37,15 +37,15 @@ class Simulator:
     def __init__(
         self,
         agents: list[Agent],
-        global_memory: GlobalMemory,
+        model: GlobalMemory,
         protocol: ConsistencyProtocol | None = None,
     ) -> None:
         self.agents = {a.agent_id: a for a in agents} # agents indexed
-        self.global_memory = global_memory # 
+        self.model = model
         self.queue = EventQueue()
         self.protocol = protocol or WriteThroughStrongProtocol()
         self.clock = VersionClock()
-        for artifact_id, artifact in self.global_memory.store.items():
+        for artifact_id, artifact in self.model.get_all_artifacts():
             self.clock._versions[artifact_id] = artifact.version_id
 
         self.now = 0
@@ -75,7 +75,7 @@ class Simulator:
             self.now = event.t
             self._handle(event) # based on event type, perform an action
 
-        return SimulationResult(trace=self.trace, agents=self.agents, global_memory=self.global_memory)
+        return SimulationResult(trace=self.trace, agents=self.agents, model=self.model)
 
     def _handle(self, event: Event) -> None:
         if event.type == EventType.EV_READ_REQ:

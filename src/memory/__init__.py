@@ -1,21 +1,28 @@
-from memory.model import Agent, Artifact, ArtifactScope, GlobalMemory, Task
+from memory.model import Agent, GlobalMemory, Task, Artifact, ArtifactScope
 from memory.simulator import Simulator
+from memory.lib import human2bytes
+
 
 def run() -> None:
-    task = Task(task_id="T1", agent_ids=["A", "B"], artifact_ids=[("T1", "shared_plan")])
-    global_memory = GlobalMemory(
-        latency=5,
-        store={
-            ("T1", "shared_plan"): Artifact(
-                artifact_id=("T1", "shared_plan"),
-                version_id=1,
-                size=1024,
-                scope=ArtifactScope.TASK,
-            )
-        },
+    task = Task(
+        task_id="T1", agent_ids=["A", "B"], artifact_ids=[("T1", "shared_plan")]
     )
+    artifact = Artifact(
+        artifact_id=("T1", "shared_plan"),
+        version_id=1,
+        size=1024,
+        scope=ArtifactScope.TASK,
+    )
+    global_memory = GlobalMemory(
+        read_latency=5,
+        write_latency=5,
+        swap_latency=100,
+        total_size=human2bytes("1gb"),
+        block_size=4096,
+    )
+    global_memory.store_artifact(artifact)
 
-    sim = Simulator(agents=[Agent("A"), Agent("B")], global_memory=global_memory)
+    sim = Simulator(agents=[Agent("A"), Agent("B")], model=global_memory)
     sim.schedule_read(t=0, agent_id="A", artifact_id=("T1", "shared_plan"))
     sim.schedule_read(t=10, agent_id="A", artifact_id=("T1", "shared_plan"))
     sim.schedule_write(t=12, agent_id="A", artifact_id=("T1", "shared_plan"), size=1200)
@@ -35,7 +42,8 @@ def run() -> None:
             f"avg_latency={avg:.2f} reads={agent.stats.read_count}"
         )
 
-    final_version = result.global_memory.store[("T1", "shared_plan")].version_id
+    assert result.model is not None
+    final_version = result.model.get_artifact(("T1", "shared_plan")).version_id
     print(f"final_version(shared_plan)={final_version}")
 
 

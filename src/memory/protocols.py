@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 from .events import Event, EventType
-from .model import Artifact, ArtifactScope, CacheEntry
+from .model import CacheEntry, Artifact, ArtifactScope
 
 if TYPE_CHECKING:
     from .simulator import Simulator
@@ -64,13 +64,13 @@ class WriteThroughStrongProtocol:
             simulator.trace_line_type(simulator.now, "EV_CACHE_MISS", f"{agent.agent_id} {artifact_id}")
         )
         simulator.queue.push(
-            t=simulator.now + simulator.global_memory.latency,
+            t=simulator.now + simulator.model.read_latency,
             event_type=EventType.EV_READ_RESP,
             src="global",
             dst=agent.agent_id,
             payload={
                 "artifact_id": artifact_id,
-                "version_id": simulator.global_memory.store[artifact_id].version_id,
+                "version_id": simulator.model.get_artifact(artifact_id).version_id,
                 "requested_t": requested_t,
                 "hit": False,
             },
@@ -82,7 +82,7 @@ class WriteThroughStrongProtocol:
         version_id = event.payload["version_id"]
         requested_t = event.payload["requested_t"]
 
-        artifact = simulator.global_memory.store[artifact_id]
+        artifact = simulator.model.get_artifact(artifact_id)
         agent.cache[artifact_id] = CacheEntry(
             artifact_id=artifact_id,
             version_id=version_id,
@@ -106,7 +106,7 @@ class WriteThroughStrongProtocol:
         size = event.payload["size"]
 
         new_version = simulator.clock.next(artifact_id)
-        old_artifact = simulator.global_memory.store.get(artifact_id)
+        old_artifact = simulator.model.get_artifact(artifact_id)
         scope = old_artifact.scope if old_artifact else ArtifactScope.TASK
 
         agent.cache[artifact_id] = CacheEntry(
@@ -124,7 +124,7 @@ class WriteThroughStrongProtocol:
         )
 
         simulator.queue.push(
-            t=simulator.now + simulator.global_memory.latency,
+            t=simulator.now + simulator.model.write_latency,
             event_type=EventType.EV_WRITE_COMMIT,
             src=agent.agent_id,
             dst="global",
@@ -144,7 +144,7 @@ class WriteThroughStrongProtocol:
             size=event.payload["size"],
             scope=event.payload["scope"],
         )
-        simulator.global_memory.store[artifact_id] = artifact
+        simulator.model.store_artifact(artifact)
         simulator.trace.append(
             simulator.trace_line_type(
                 simulator.now,
