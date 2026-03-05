@@ -1,25 +1,41 @@
-from memory.model import Agent, Artifact, ArtifactScope, CoherenceState, GlobalMemory
+from memory.lib import human2bytes
+from memory.model import (
+    Agent,
+    Artifact,
+    ArtifactScope,
+    CoherenceState,
+    GlobalMemory,
+    Memory,
+)
 from memory.protocols import EventualProtocol
 from memory.simulator import Simulator
 
 
 def test_eventual_protocol_delays_global_visibility() -> None:
     artifact_id = ("T1", "shared_plan")
-    global_memory = GlobalMemory(
-        latency=2,
-        store={
-            artifact_id: Artifact(
-                artifact_id=artifact_id,
-                version_id=1,
-                size=64,
-                scope=ArtifactScope.TASK,
-                confidence=1.0,
-            )
-        },
+    artifact = Artifact(
+        artifact_id=artifact_id,
+        version_id=1,
+        size=64,
+        scope=ArtifactScope.TASK,
+        confidence=1.0,
     )
 
+    global_memory = GlobalMemory(
+        read_latency=2,
+        write_latency=2,
+        swap_latency=100,
+        total_size=human2bytes("4 gb"),
+        block_size=4096,
+    )
+
+    global_memory.store_artifact(artifact)
+
     sim = Simulator(
-        agents=[Agent("A"), Agent("B")],
+        agents=[
+            Agent("A", Memory(1, 1, human2bytes("1 gb"), 4096)),
+            Agent("B", Memory(1, 1, human2bytes("1 gb"), 4096)),
+        ],
         global_memory=global_memory,
         protocol=EventualProtocol(propagation_delay=2),
     )
@@ -36,10 +52,15 @@ def test_eventual_protocol_delays_global_visibility() -> None:
     result = sim.run()
 
     # Global memory eventually converges to the new version.
-    assert result.global_memory.store[artifact_id].version_id == 2
+    assert result.global_memory is not None
+    assert result.global_memory.get_artifact(artifact_id).version_id == 2
 
     # First read misses and returns old version from global; second read is cache hit on B.
-    read_events = [line for line in result.trace if line.event == "EV_READ_RESP" and line.metadata["agent"] == "B"]
+    read_events = [
+        line
+        for line in result.trace
+        if line.event == "EV_READ_RESP" and line.metadata["agent"] == "B"
+    ]
     assert read_events[0].metadata["version_id"] == 1
     assert read_events[1].metadata["version_id"] == 1
 
@@ -48,23 +69,39 @@ def test_eventual_protocol_delays_global_visibility() -> None:
     assert commit_events[0].t == 6
 
 
-def test_eventual_protocol_marks_provisional_then_commits_with_contested_state() -> None:
+def test_eventual_protocol_marks_provisional_then_commits_with_contested_state() -> (
+    None
+):
     artifact_id = ("T1", "shared_plan")
-    global_memory = GlobalMemory(
-        latency=3,
-        store={
-            artifact_id: Artifact(
-                artifact_id=artifact_id,
-                version_id=4,
-                size=100,
-                scope=ArtifactScope.TASK,
-                confidence=0.95,
-            )
-        },
+    artifact = Artifact(
+        artifact_id=artifact_id,
+        version_id=4,
+        size=100,
+        scope=ArtifactScope.TASK,
+        confidence=0.95,
     )
 
+    global_memory = GlobalMemory(
+        read_latency=3,
+        write_latency=3,
+        swap_latency=100,
+        total_size=human2bytes("4 gb"),
+        block_size=4096,
+    )
+    global_memory.store_artifact(artifact)
+
     sim = Simulator(
-        agents=[Agent("A")],
+        agents=[
+            Agent(
+                "A",
+                Memory(
+                    read_latency=1,
+                    write_latency=1,
+                    total_size=human2bytes("1 gb"),
+                    block_size=4096,
+                ),
+            )
+        ],
         global_memory=global_memory,
         protocol=EventualProtocol(propagation_delay=1),
     )
@@ -75,10 +112,13 @@ def test_eventual_protocol_marks_provisional_then_commits_with_contested_state()
     write_req = [line for line in result.trace if line.event == "EV_WRITE_REQ"][0]
     assert write_req.metadata["coherence_state"] == CoherenceState.PROVISIONAL.value
 
-    committed = result.global_memory.store[artifact_id]
+    assert result.global_memory is not None
+    committed = result.global_memory.get_artifact(artifact_id)
     assert committed.version_id == 5
     assert committed.coherence_state == CoherenceState.CONTESTED
 
     # Eventual propagation adds one sync/check step before commit.
-    conflict_events = [line for line in result.trace if line.event == "EV_CONFLICT_CHECK"]
+    conflict_events = [
+        line for line in result.trace if line.event == "EV_CONFLICT_CHECK"
+    ]
     assert len(conflict_events) == 1

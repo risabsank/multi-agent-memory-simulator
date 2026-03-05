@@ -1,6 +1,7 @@
-from memory.model import Agent, Artifact, ArtifactScope, CoherenceState, GlobalMemory
+from memory.model import Agent, Artifact, ArtifactScope, CoherenceState, GlobalMemory, Memory
 from memory.protocols import WriteThroughStrongProtocol
 from memory.simulator import Simulator
+from memory.lib import human2bytes
 
 
 def _build_scenario() -> tuple[Simulator, tuple[str, str]]:
@@ -17,7 +18,10 @@ def _build_scenario() -> tuple[Simulator, tuple[str, str]]:
     global_memory.store_artifact(artifact)
 
     sim = Simulator(
-        agents=[Agent("A"), Agent("B")],
+        agents=[
+            Agent("A", Memory(1, 1, human2bytes("1 gb"), 4096)),
+            Agent("B", Memory(1, 1, human2bytes("1 gb"), 4096)),
+        ],
         global_memory=global_memory,
         protocol=WriteThroughStrongProtocol(),
     )
@@ -35,7 +39,7 @@ def test_read_write_flow_and_versions() -> None:
     assert result.agents["A"].stats.misses == 1
     assert result.agents["A"].stats.hits == 1
     assert result.global_memory._store[artifact_id].version_id == 2 # type: ignore[union-attr]
-    assert result.agents["B"].cache[artifact_id].version_id == 2
+    assert result.agents["B"].cache.get_artifact(artifact_id).version_id == 2
     assert result.avg_latency("A") >= 0
     assert result.avg_write_latency("A") >= 0
 

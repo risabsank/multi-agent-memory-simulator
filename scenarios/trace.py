@@ -1,5 +1,5 @@
 from memory.lib import human2bytes
-from memory.model import Agent, GlobalMemory, Task, Artifact, ArtifactScope
+from memory.model import Agent, GlobalMemory, Memory, Task, Artifact, ArtifactScope
 from memory.protocols import WriteThroughStrongProtocol
 from memory.simulator import Simulator
 
@@ -24,7 +24,10 @@ def run() -> None:
     global_memory.store_artifact(artifact)
 
     sim = Simulator(
-        agents=[Agent("A"), Agent("B")],
+        agents=[
+            Agent("A", Memory(1, 1, human2bytes("1 gb"), 4096)),
+            Agent("B", Memory(1, 1, human2bytes("1 gb"), 4096)),
+        ],
         global_memory=global_memory,
         protocol=WriteThroughStrongProtocol(),
     )

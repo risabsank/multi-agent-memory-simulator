@@ -1,6 +1,7 @@
-from memory.model import Agent, Artifact, ArtifactScope, CoherenceState, GlobalMemory
+from memory.model import Agent, Artifact, ArtifactScope, CoherenceState, GlobalMemory, Memory
 from memory.protocols import ConflictDecision, DeterministicConflictJudge, EventualProtocol, WriteThroughStrongProtocol
 from memory.simulator import Simulator
+from memory.lib import human2bytes
 
 
 class DeprecatedJudge:
@@ -41,21 +42,25 @@ def test_deterministic_conflict_judge_parity_states() -> None:
 
 def test_strong_protocol_conflict_check_has_judge_audit_metadata() -> None:
     artifact_id = ("T1", "shared")
-    global_memory = GlobalMemory(
-        latency=1,
-        store={
-            artifact_id: Artifact(
+    artifact = Artifact(
                 artifact_id=artifact_id,
                 version_id=1,
                 size=10,
                 scope=ArtifactScope.TASK,
                 confidence=0.95,
             )
-        },
+
+    global_memory = GlobalMemory(
+        read_latency=1,
+        write_latency=1,
+        swap_latency=100,
+        total_size=human2bytes("4 gb"),
+        block_size=4096,
     )
+    global_memory.store_artifact(artifact)
 
     sim = Simulator(
-        agents=[Agent("A")],
+        agents=[Agent("A", Memory(1, 1, human2bytes("1 gb"), 4096))],
         global_memory=global_memory,
         protocol=WriteThroughStrongProtocol(),
     )
@@ -71,21 +76,25 @@ def test_strong_protocol_conflict_check_has_judge_audit_metadata() -> None:
 
 def test_eventual_protocol_uses_judge_for_sync_decision() -> None:
     artifact_id = ("T1", "shared")
-    global_memory = GlobalMemory(
-        latency=1,
-        store={
-            artifact_id: Artifact(
+    artifact = Artifact(
                 artifact_id=artifact_id,
                 version_id=1,
                 size=10,
                 scope=ArtifactScope.TASK,
                 confidence=0.9,
             )
-        },
+
+    global_memory = GlobalMemory(
+        read_latency=1,
+        write_latency=1,
+        swap_latency=100,
+        total_size=human2bytes("4 gb"),
+        block_size=4096,
     )
+    global_memory.store_artifact(artifact)
 
     sim = Simulator(
-        agents=[Agent("A")],
+        agents=[Agent("A", Memory(1, 1, human2bytes("1 gb"), 4096))],
         global_memory=global_memory,
         protocol=EventualProtocol(propagation_delay=1, conflict_judge=DeprecatedJudge()),
     )
@@ -97,5 +106,6 @@ def test_eventual_protocol_uses_judge_for_sync_decision() -> None:
     assert conflict_event.metadata["judge_prompt_version"] == "test_v1"
     assert conflict_event.metadata["reason_codes"] == ["manual_override"]
 
-    committed = result.global_memory.store[artifact_id]
+    assert result.global_memory is not None
+    committed = result.global_memory.get_artifact(artifact_id)
     assert committed.coherence_state == CoherenceState.DEPRECATED
