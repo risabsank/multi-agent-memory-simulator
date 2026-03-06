@@ -165,9 +165,21 @@ class EventualProtocol(ConsistencyProtocol):
         # cache will be immediate and global will be eventual
 
         # TODO: this function requires a bunch of prefilled fields in event, but I don't know if they are filled in at this time
-        artifact = ConsistencyProtocol.create_artifact(simulator, event)
+        pending_artifact = Artifact(  # changed this to build an explicit pending artifact so latency estimation does not depend on pre-existing store state
+            artifact_id=artifact_id,
+            version_id=new_version,
+            size=size,
+            scope=scope,
+            claim_type=claim_type,
+            provenance=agent.agent_id,
+            confidence=confidence,
+            coherence_state=CoherenceState.ACCEPTED,  # changed this to keep pending cache-commit artifact construction explicit without relying on an undefined local state
+            observed_at=simulator.now,
+            valid_at=None,
+        )
+
         simulator.queue.push(
-            t=simulator.now + agent.cache.store_artifact_latency(artifact),
+            t=simulator.now + agent.cache.store_artifact_latency(pending_artifact),
             event_type=EventType.EV_WRITE_COMMIT,
             src=agent.agent_id,
             dst="cache",
@@ -205,7 +217,7 @@ class EventualProtocol(ConsistencyProtocol):
         )
 
         simulator.queue.push(
-            t=simulator.now + simulator.global_memory.store_artifact_latency(artifact) * self.propagation_delay,  # same artifact object should be ok, TODO: verify this timing is correct (I'm not entirely sure what propagation_delay is)
+            t=simulator.now + simulator.global_memory.store_artifact_latency(pending_artifact) * self.propagation_delay,  # changed this to use the explicit pending artifact for dynamic global write latency calculation
             event_type=EventType.EV_CONFLICT_CHECK,
             src=agent.agent_id,
             dst="global",

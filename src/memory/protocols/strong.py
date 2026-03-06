@@ -46,19 +46,21 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
         artifact_id = tuple(event.payload["artifact_id"])
         requested_t = event.payload["requested_t"]
 
+        t = simulator.now + agent.cache.read_artifact_latency(artifact_id)
         if agent.cache.artifact_exists(artifact_id):
+            agent.cache.read_artifact(artifact_id)
             entry = agent.cache.get_artifact(artifact_id)
             agent.stats.hits += 1
             simulator.trace.append(
                 simulator.trace_line_type(
-                    simulator.now,
+                    t,
                     "EV_CACHE_HIT",
                     f"{agent.agent_id} {artifact_id} v{entry.version_id}",
                     metadata={"agent": agent.agent_id, "artifact_id": artifact_id, "read_source": "cache"},
                 )
             )
             simulator.queue.push(
-                t=simulator.now,
+                t=t,
                 event_type=EventType.EV_READ_RESP,
                 src="cache",
                 dst=agent.agent_id,
@@ -75,14 +77,14 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
         agent.stats.misses += 1
         simulator.trace.append(
             simulator.trace_line_type(
-                simulator.now,
+                t,
                 "EV_CACHE_MISS",
                 f"{agent.agent_id} {artifact_id}",
                 metadata={"agent": agent.agent_id, "artifact_id": artifact_id, "read_source": "global"},
             )
         )
         simulator.queue.push(
-            t=simulator.now + simulator.global_memory.read_artifact_latency(artifact_id),
+            t=t + simulator.global_memory.read_artifact_latency(artifact_id),
             event_type=EventType.EV_READ_RESP,
             src="global",
             dst=agent.agent_id,
@@ -94,18 +96,6 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
                 "read_source": "global",
             },
         )
-
-        if self.auto_invalidate_on_commit:
-            for agent_id in simulator.agents:
-                if agent_id == event.src:
-                    continue
-                simulator.queue.push(
-                    t=simulator.now,
-                    event_type=EventType.EV_INVALIDATE,
-                    src="global",
-                    dst=agent_id,
-                    payload={"artifact_id": artifact_id, "reason": "write_commit"},
-                )
 
     def on_read_resp(self, simulator: Simulator, event: Event) -> None:
         agent = simulator.agents[event.dst]
@@ -154,9 +144,20 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
         confidence = float(event.payload.get("confidence", 0.8))
         coherence_state = self._resolve_coherence_state(old_artifact, confidence)
 
-        artifact = ConsistencyProtocol.create_artifact(simulator, event)
+        pending_artifact = Artifact(  # changed this to build an explicit pending artifact so latency estimation does not depend on pre-existing store state
+            artifact_id=artifact_id,
+            version_id=new_version,
+            size=size,
+            scope=scope,
+            claim_type=claim_type,
+            provenance=agent.agent_id,
+            confidence=confidence,
+            coherence_state=coherence_state,
+            observed_at=simulator.now,
+            valid_at=None,
+        )
         simulator.queue.push(
-            t=simulator.now + agent.cache.store_artifact_latency(artifact),
+            t=simulator.now + agent.cache.store_artifact_latency(pending_artifact),
             event_type=EventType.EV_WRITE_COMMIT,
             src=agent.agent_id,
             dst="cache",
@@ -205,7 +206,7 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
         )
 
         simulator.queue.push(
-            t=simulator.now + simulator.global_memory.store_artifact_latency(artifact),
+            t=simulator.now + simulator.global_memory.store_artifact_latency(pending_artifact),
             event_type=EventType.EV_WRITE_COMMIT,
             src=agent.agent_id,
             dst="global",
@@ -227,7 +228,7 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
     def on_write_commit(self, simulator: Simulator, event: Event) -> None:
         artifact_id = tuple(event.payload["artifact_id"])
         agent = simulator.agents[event.src]
-        if event.src == "cache":
+        if event.dst == "cache":
             artifact = ConsistencyProtocol.create_artifact(simulator, event)
             if agent.cache.artifact_exists(artifact_id):
                 agent.cache.overwrite_artifact(artifact)
@@ -260,6 +261,18 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
                 },
             )
         )
+
+        if self.auto_invalidate_on_commit:  # schedule invalidations only after global commit visibility is established
+            for agent_id in simulator.agents:
+                if agent_id == event.src:
+                    continue
+                simulator.queue.push(
+                    t=simulator.now,
+                    event_type=EventType.EV_INVALIDATE,
+                    src="global",
+                    dst=agent_id,
+                    payload={"artifact_id": artifact_id, "reason": "write_commit"},
+                )
 
     def on_sync_req(self, simulator: Simulator, event: Event) -> None:
         if event.type == EventType.EV_SYNC_REQ:

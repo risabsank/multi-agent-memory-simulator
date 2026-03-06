@@ -159,7 +159,7 @@ class Memory:
         self._lru = Memory.LRUEviction()
 
     def store_artifact_latency(self, artifact: Artifact) -> int:  # TODO: read vs store latency functions take artifact id and artifact respectively, maybe they should be the same? issue is artifact is better for store since id won't exist within memory at that point in time
-        return self._calc_artifact_latency(self.write_latency, artifact.artifact_id)
+        return self._calc_total_latency_for_size(self.write_latency, artifact.size)
 
     def store_artifact(self, artifact: Artifact) -> None:
         """
@@ -242,11 +242,11 @@ class Memory:
     def artifact_exists(self, artifact_id) -> bool:
         return self._store.get(artifact_id) is not None
 
-    def _calc_total_latency(self, base_latency: int, size: int) -> int:
+    def _calc_total_latency_for_size(self, base_latency: int, size: int) -> int:
         return base_latency * Memory.num_blocks(size, self.block_size)
 
     def _calc_artifact_latency(self, base_latency: int, artifact_id: ArtifactId):
-        return self._calc_total_latency(base_latency, self.get_artifact(artifact_id).size)
+        return self._calc_total_latency_for_size(base_latency, self.get_artifact(artifact_id).size)
 
     @staticmethod
     def num_blocks(size: int, block_size: int) -> int:
@@ -300,14 +300,12 @@ class GlobalMemory(Memory):
 
     def store_artifact_latency(self, artifact: Artifact) -> int:
         req_size = Memory.num_blocks(artifact.size, self.block_size) * self.block_size
-        base_latency = self._calc_artifact_latency(
-            self.write_latency, artifact.artifact_id
-        )
+        base_latency = self._calc_total_latency_for_size(self.write_latency, artifact.size)  # changed this to compute write latency from candidate artifact size instead of requiring an existing stored artifact
 
         # TODO: dedup with _evict
         evicted_size = 0
         i = 0
-        while evicted_size < artifact.size:
+        while evicted_size < req_size:  # changed this to use block-aligned required size so swap penalty estimate matches actual eviction need
             to_evict = self.get_artifact(self._lru.lru[i])
             i += 1
             to_evict_size = Memory.num_blocks(to_evict.size, self.block_size) * self.block_size
@@ -315,7 +313,7 @@ class GlobalMemory(Memory):
             evicted_size += to_evict_size
 
         if req_size > self.total_size - self._used_size:
-            return base_latency + self._calc_total_latency(self.swap_latency, evicted_size)
+            return base_latency + self._calc_total_latency_for_size(self.swap_latency, evicted_size)
         return base_latency
 
     def store_artifact(self, artifact: Artifact) -> None:
