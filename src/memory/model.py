@@ -82,8 +82,9 @@ class AgentStats:
 @dataclass
 class Agent:
     """One simulated worker/actor."""
+
     agent_id: str
-    cache: Memory
+    cache: Cache
     stats: AgentStats = field(default_factory=AgentStats)
 
 
@@ -91,6 +92,7 @@ class Agent:
 @dataclass
 class Task:
     """Coordination namespace over agents and artifacts."""
+
     task_id: str
     agent_ids: list[str]  # list of involved agents
     artifact_ids: list[ArtifactId]  # list of involved artifacts
@@ -158,10 +160,12 @@ class Memory:
         self._used_size = 0
         self._lru = Memory.LRUEviction()
 
-    def store_artifact_latency(self, artifact: Artifact) -> int:  # TODO: read vs store latency functions take artifact id and artifact respectively, maybe they should be the same? issue is artifact is better for store since id won't exist within memory at that point in time
+    def store_artifact_latency(
+        self, artifact: Artifact
+    ) -> int:  # TODO: read vs store latency functions take artifact id and artifact respectively, maybe they should be the same? issue is artifact is better for store since id won't exist within memory at that point in time
         return self._calc_total_latency_for_size(self.write_latency, artifact.size)
 
-    def store_artifact(self, artifact: Artifact) -> None:
+    def store_artifact_unique(self, artifact: Artifact) -> None:
         """
         Artifact must not already be in store
         """
@@ -178,6 +182,13 @@ class Memory:
         self._store[artifact_id] = artifact
 
         self._lru.update_artifact_id(artifact_id)
+
+    def store_artifact(self, artifact: Artifact) -> None:
+        """Overwrite if necessary"""  # I believe we only want to write/overwrite when necessary
+        if self.artifact_exists(artifact.artifact_id):
+            self.overwrite_artifact(artifact)
+        else:
+            self.store_artifact_unique(artifact)
 
     def overwrite_artifact(self, artifact: Artifact) -> None:
         # can this happen? should the parameter be artifact or artifact_id + size?
@@ -239,14 +250,16 @@ class Memory:
             )  # ensure we're making progress since while loops can be undeterministic, this likely means an invalid object was stored to global memory
             evicted_size += req_size
 
-    def artifact_exists(self, artifact_id) -> bool:
+    def artifact_exists(self, artifact_id: ArtifactId) -> bool:
         return self._store.get(artifact_id) is not None
 
     def _calc_total_latency_for_size(self, base_latency: int, size: int) -> int:
         return base_latency * Memory.num_blocks(size, self.block_size)
 
     def _calc_artifact_latency(self, base_latency: int, artifact_id: ArtifactId):
-        return self._calc_total_latency_for_size(base_latency, self.get_artifact(artifact_id).size)
+        return self._calc_total_latency_for_size(
+            base_latency, self.get_artifact(artifact_id).size
+        )
 
     @staticmethod
     def num_blocks(size: int, block_size: int) -> int:
@@ -300,23 +313,31 @@ class GlobalMemory(Memory):
 
     def store_artifact_latency(self, artifact: Artifact) -> int:
         req_size = Memory.num_blocks(artifact.size, self.block_size) * self.block_size
-        base_latency = self._calc_total_latency_for_size(self.write_latency, artifact.size)  # changed this to compute write latency from candidate artifact size instead of requiring an existing stored artifact
+        base_latency = self._calc_total_latency_for_size(
+            self.write_latency, artifact.size
+        )  # changed this to compute write latency from candidate artifact size instead of requiring an existing stored artifact
 
         # TODO: dedup with _evict
         evicted_size = 0
         i = 0
-        while evicted_size < req_size:  # changed this to use block-aligned required size so swap penalty estimate matches actual eviction need
+        while (
+            evicted_size < req_size
+        ):  # changed this to use block-aligned required size so swap penalty estimate matches actual eviction need
             to_evict = self.get_artifact(self._lru.lru[i])
             i += 1
-            to_evict_size = Memory.num_blocks(to_evict.size, self.block_size) * self.block_size
+            to_evict_size = (
+                Memory.num_blocks(to_evict.size, self.block_size) * self.block_size
+            )
             assert to_evict_size != 0
             evicted_size += to_evict_size
 
         if req_size > self.total_size - self._used_size:
-            return base_latency + self._calc_total_latency_for_size(self.swap_latency, evicted_size)
+            return base_latency + self._calc_total_latency_for_size(
+                self.swap_latency, evicted_size
+            )
         return base_latency
 
-    def store_artifact(self, artifact: Artifact) -> None:
+    def store_artifact_unique(self, artifact: Artifact) -> None:
         """
         Artifact must not already be in store
         """
@@ -400,6 +421,24 @@ class GlobalMemory(Memory):
         memory_artifacts = list(self._store.items())
         memory_artifacts.extend(swap_artifacts)
         return memory_artifacts
+
+
+@dataclass(kw_only=True)
+class Cache(Memory):
+    def read_artifact_latency(self, artifact_id: ArtifactId) -> int:
+        """
+        Since memory in this model is represented per-object, the cache hit/miss latencies are different:
+            - A cache hit will be the latency per block * number of blocks in the artifact
+            - A cache miss will be the latency for one block
+        The idea here is that a cache hit needs to read the entire artifact out of cache, which takes time, while a cache miss can test for one block in the cache and see if that is missing.
+        This may not be exactly correct depending on the implementation of the cache (maybe they can compare and read in parallel, similar to how tag comparators are implemented in cpu caches), and is not correct for a per-block VM system
+
+        Fortunately, the store can be the same
+        """
+        if self.artifact_exists(artifact_id):
+            return super().read_artifact_latency(artifact_id)
+        else:
+            return self.read_latency
 
 
 class VersionClock:

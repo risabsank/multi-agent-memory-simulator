@@ -1,8 +1,12 @@
 import json
 import time
 
-from memory.model import Agent, Artifact, ArtifactScope, GlobalMemory, Memory
-from memory.protocols import EventualProtocol, LLMConflictJudge, WriteThroughStrongProtocol
+from memory.model import Agent, Artifact, ArtifactScope, GlobalMemory, Memory, Cache
+from memory.protocols import (
+    EventualProtocol,
+    LLMConflictJudge,
+    WriteThroughStrongProtocol,
+)
 from memory.simulator import Simulator
 from memory.lib import human2bytes
 
@@ -19,9 +23,11 @@ def test_llm_judge_success_populates_prompt_metadata() -> None:
 
     artifact_id = ("T1", "shared")
 
-    artifact = Artifact(artifact_id=artifact_id, version_id=1, size=1, scope=ArtifactScope.TASK)
+    artifact = Artifact(
+        artifact_id=artifact_id, version_id=1, size=1, scope=ArtifactScope.TASK
+    )
     sim = Simulator(
-        agents=[Agent("A", Memory(1, 1, human2bytes("1 gb"), 4096))],
+        agents=[Agent("A", Cache(1, 1, human2bytes("1 gb"), 4096))],
         global_memory=GlobalMemory(
             read_latency=1,
             write_latency=1,
@@ -40,7 +46,9 @@ def test_llm_judge_success_populates_prompt_metadata() -> None:
 
     sim.schedule_write(0, "A", artifact_id, 5)
     result = sim.run()
-    conflict_event = next(line for line in result.trace if line.event == "EV_CONFLICT_CHECK")
+    conflict_event = next(
+        line for line in result.trace if line.event == "EV_CONFLICT_CHECK"
+    )
 
     assert conflict_event.metadata["judge_provider"] == "openai"
     assert conflict_event.metadata["judge_model"] == "gpt-sim"
@@ -57,21 +65,21 @@ def test_llm_judge_failure_falls_back_with_warning_and_report_metrics() -> None:
 
     artifact_id = ("T1", "shared")
     artifact = Artifact(
-                    artifact_id=artifact_id,
-                    version_id=1,
-                    size=1,
-                    scope=ArtifactScope.TASK,
-                    confidence=0.95,
-                )
+        artifact_id=artifact_id,
+        version_id=1,
+        size=1,
+        scope=ArtifactScope.TASK,
+        confidence=0.95,
+    )
 
     sim = Simulator(
-        agents=[Agent("A", Memory(1, 1, human2bytes("1 gb"), 4096))],
+        agents=[Agent("A", Cache(1, 1, human2bytes("1 gb"), 4096))],
         global_memory=GlobalMemory(
-        read_latency=1,
-        write_latency=1,
-        swap_latency=100,
-        total_size=human2bytes("4 gb"),
-        block_size=4096,
+            read_latency=1,
+            write_latency=1,
+            swap_latency=100,
+            total_size=human2bytes("4 gb"),
+            block_size=4096,
         ),
         protocol=EventualProtocol(
             propagation_delay=1,
@@ -84,7 +92,9 @@ def test_llm_judge_failure_falls_back_with_warning_and_report_metrics() -> None:
     )
     sim.schedule_write(0, "A", artifact_id, 5)
     result = sim.run()
-    conflict_event = next(line for line in result.trace if line.event == "EV_CONFLICT_CHECK")
+    conflict_event = next(
+        line for line in result.trace if line.event == "EV_CONFLICT_CHECK"
+    )
 
     assert conflict_event.metadata["judge_fallback_used"] is True
     assert conflict_event.metadata["judge_warning"] == "llm_timeout"
@@ -100,7 +110,11 @@ def test_llm_judge_failure_falls_back_with_warning_and_report_metrics() -> None:
 
 
 def test_llm_conflict_judge_direct_parse_error_fallback_code() -> None:
-    judge = LLMConflictJudge(inference_fn=lambda _p: "{}", provider="p", model="m", timeout_s=0.1)
-    decision = judge.judge(previous=None, candidate_confidence=0.7, candidate_payload={})
+    judge = LLMConflictJudge(
+        inference_fn=lambda _p: "{}", provider="p", model="m", timeout_s=0.1
+    )
+    decision = judge.judge(
+        previous=None, candidate_confidence=0.7, candidate_payload={}
+    )
     assert decision.fallback_used is True
     assert decision.warning == "llm_schema_missing"

@@ -6,6 +6,7 @@ from memory.model import (
     CoherenceState,
     GlobalMemory,
     Memory,
+    Cache,
 )
 from memory.protocols import EventualProtocol
 from memory.simulator import Simulator
@@ -33,8 +34,8 @@ def test_eventual_protocol_delays_global_visibility() -> None:
 
     sim = Simulator(
         agents=[
-            Agent("A", Memory(1, 1, human2bytes("1 gb"), 4096)),
-            Agent("B", Memory(1, 1, human2bytes("1 gb"), 4096)),
+            Agent("A", Cache(1, 1, human2bytes("1 gb"), 4096)),
+            Agent("B", Cache(1, 1, human2bytes("1 gb"), 4096)),
         ],
         global_memory=global_memory,
         protocol=EventualProtocol(propagation_delay=2),
@@ -94,7 +95,7 @@ def test_eventual_protocol_marks_provisional_then_commits_with_contested_state()
         agents=[
             Agent(
                 "A",
-                Memory(
+                Cache(
                     read_latency=1,
                     write_latency=1,
                     total_size=human2bytes("1 gb"),

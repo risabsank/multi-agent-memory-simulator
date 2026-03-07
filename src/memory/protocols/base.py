@@ -12,14 +12,8 @@ if TYPE_CHECKING:
 class ConsistencyProtocol(Protocol):
     @staticmethod
     def create_artifact(simulator: Simulator, event: Event) -> Artifact:
-        # I doubt checking for existence changes much behavior, but just in case
-        agent = simulator.agents[event.src]
+        # I cannot actually check for existence here as the artifact in the agent cache may defer from the specifications for the artifact to be written defined in event
         artifact_id = tuple(event.payload["artifact_id"])
-        if agent.cache.artifact_exists(artifact_id):
-            return agent.cache.get_artifact(artifact_id)
-        if simulator.global_memory.artifact_exists(artifact_id):
-            return simulator.global_memory.get_artifact(artifact_id)
-
         scope = event.payload["scope"]
         claim_type = event.payload["claim_type"]
         coherence_state = event.payload["coherence_state"]

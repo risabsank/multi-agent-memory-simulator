@@ -43,7 +43,9 @@ class EventualProtocol(ConsistencyProtocol):
         )
 
     @staticmethod
-    def _resolve_commit_state(old_artifact: Artifact | None, confidence: float) -> CoherenceState:
+    def _resolve_commit_state(
+        old_artifact: Artifact | None, confidence: float
+    ) -> CoherenceState:
         if old_artifact and confidence < old_artifact.confidence:
             return CoherenceState.CONTESTED
         return CoherenceState.ACCEPTED
@@ -54,7 +56,8 @@ class EventualProtocol(ConsistencyProtocol):
         requested_t = event.payload["requested_t"]
         t = simulator.now
 
-        # TODO: technically, the latency for a cache hit and cache miss are probably different
+        # prior todo: technically, the latency for a cache hit and cache miss are probably different
+        # edit: I think I resolved this in the Cache class
         t += agent.cache.read_artifact_latency(artifact_id)
         if agent.cache.artifact_exists(artifact_id):
             agent.cache.read_artifact(artifact_id)
@@ -95,7 +98,11 @@ class EventualProtocol(ConsistencyProtocol):
                 t,
                 "EV_CACHE_MISS",
                 f"{agent.agent_id} {artifact_id}",
-                metadata={"agent": agent.agent_id, "artifact_id": artifact_id, "read_source": "global"},
+                metadata={
+                    "agent": agent.agent_id,
+                    "artifact_id": artifact_id,
+                    "read_source": "global",
+                },
             )
         )
 
@@ -107,7 +114,9 @@ class EventualProtocol(ConsistencyProtocol):
             dst=agent.agent_id,
             payload={
                 "artifact_id": artifact_id,
-                "version_id": simulator.global_memory.get_artifact(artifact_id).version_id,
+                "version_id": simulator.global_memory.get_artifact(
+                    artifact_id
+                ).version_id,
                 "requested_t": requested_t,
                 "hit": False,
                 "read_source": "global",
@@ -122,10 +131,7 @@ class EventualProtocol(ConsistencyProtocol):
         requested_t = int(event.payload["requested_t"])
 
         artifact = simulator.global_memory.get_artifact(artifact_id)
-        if agent.cache.artifact_exists(artifact_id):
-            agent.cache.overwrite_artifact(artifact)
-        else:
-            agent.cache.store_artifact(artifact)
+        agent.cache.store_artifact(artifact)
 
         latency = simulator.now - requested_t
         agent.stats.read_latency_total += latency
@@ -156,7 +162,11 @@ class EventualProtocol(ConsistencyProtocol):
         size = int(event.payload["size"])
         requested_t = int(event.payload["requested_t"])
         new_version = simulator.clock.next(artifact_id)
-        old_artifact = simulator.global_memory.get_artifact(artifact_id) if simulator.global_memory.artifact_exists(artifact_id) else None
+        old_artifact = (
+            simulator.global_memory.get_artifact(artifact_id)
+            if simulator.global_memory.artifact_exists(artifact_id)
+            else None
+        )
         scope = old_artifact.scope if old_artifact else ArtifactScope.TASK
         claim_type = old_artifact.claim_type if old_artifact else ClaimType.PLAN
         confidence = float(event.payload.get("confidence", 0.8))
@@ -178,8 +188,11 @@ class EventualProtocol(ConsistencyProtocol):
             valid_at=None,
         )
 
+        cache_commit_time = simulator.now + agent.cache.store_artifact_latency(
+            pending_artifact
+        )
         simulator.queue.push(
-            t=simulator.now + agent.cache.store_artifact_latency(pending_artifact),
+            t=cache_commit_time,
             event_type=EventType.EV_WRITE_COMMIT,
             src=agent.agent_id,
             dst="cache",
@@ -195,10 +208,9 @@ class EventualProtocol(ConsistencyProtocol):
                 "observed_at": simulator.now,
                 "valid_at": None,
                 "old_version": old_artifact.version_id if old_artifact else None,
-                "coherence_state": CoherenceState.ACCEPTED.value  # TODO: verify that this payload is correct for generated an artifact
+                "coherence_state": CoherenceState.ACCEPTED.value,  # TODO: verify that this payload is correct for generated an artifact
             },
         )
-
 
         simulator.trace.append(
             simulator.trace_line_type(
@@ -216,8 +228,20 @@ class EventualProtocol(ConsistencyProtocol):
             )
         )
 
+        global_memory_commit_time = (
+            simulator.now
+            + simulator.global_memory.store_artifact_latency(pending_artifact)
+            * self.propagation_delay
+        )
+        # To be extra careful, ensure global memory is slower than cache, else the state machine behavior will be weird/undefined
+        # even being equal might result in the wrong order of operations, dependent on Python's heap sorting algorithms
+        # from my testing, this will ensure that global memory latency > cache latency
+        if not global_memory_commit_time > cache_commit_time:
+            raise Exception(
+                f"Global memory commit time {global_memory_commit_time} is not greater than cache commit time {cache_commit_time}! Ensure that global memory latency is configured to have higher latency that cache latency."
+            )
         simulator.queue.push(
-            t=simulator.now + simulator.global_memory.store_artifact_latency(pending_artifact) * self.propagation_delay,  # changed this to use the explicit pending artifact for dynamic global write latency calculation
+            t=global_memory_commit_time,  # changed this to use the explicit pending artifact for dynamic global write latency calculation
             event_type=EventType.EV_CONFLICT_CHECK,
             src=agent.agent_id,
             dst="global",
@@ -233,6 +257,7 @@ class EventualProtocol(ConsistencyProtocol):
                 "observed_at": simulator.now,
                 "valid_at": None,
                 "old_version": old_artifact.version_id if old_artifact else None,
+                "coherence_state": "contested",  # not a real coherence state, required for building a fake artifact in EV_SYNC_REQ to calculate artifact write latency
             },
         )
 
@@ -244,12 +269,13 @@ class EventualProtocol(ConsistencyProtocol):
                 return
 
             artifact = simulator.global_memory.get_artifact(artifact_id)
-            local_entry = agent.cache.get_artifact(artifact_id) if agent.cache.artifact_exists(artifact_id) else None
+            local_entry = (
+                agent.cache.get_artifact(artifact_id)
+                if agent.cache.artifact_exists(artifact_id)
+                else None
+            )
             stale_before = local_entry.version_id if local_entry else None
-            if agent.cache.artifact_exists(artifact_id):
-                agent.cache.overwrite_artifact(artifact)
-            else:
-                agent.cache.store_artifact(artifact)
+            agent.cache.store_artifact(artifact)
             simulator.trace.append(
                 simulator.trace_line_type(
                     simulator.now,
@@ -267,7 +293,11 @@ class EventualProtocol(ConsistencyProtocol):
 
         artifact_id = tuple(event.payload["artifact_id"])
         confidence = float(event.payload["confidence"])
-        previous = simulator.global_memory.get_artifact(artifact_id) if simulator.global_memory.artifact_exists(artifact_id) else None
+        previous = (
+            simulator.global_memory.get_artifact(artifact_id)
+            if simulator.global_memory.artifact_exists(artifact_id)
+            else None
+        )
         decision = self.conflict_judge.judge(
             previous=previous,
             candidate_confidence=confidence,
@@ -291,7 +321,10 @@ class EventualProtocol(ConsistencyProtocol):
         )
 
         simulator.queue.push(
-            t=simulator.now + simulator.global_memory.store_artifact_latency(ConsistencyProtocol.create_artifact(simulator, event)),
+            t=simulator.now
+            + simulator.global_memory.store_artifact_latency(
+                ConsistencyProtocol.create_artifact(simulator, event)
+            ),
             event_type=EventType.EV_WRITE_COMMIT,
             src=event.src,
             dst="global",
@@ -309,11 +342,15 @@ class EventualProtocol(ConsistencyProtocol):
                 "requested_t": event.payload["requested_t"],
             },
         )
-    
+
     def on_invalidate_req(self, simulator: Simulator, event: Event) -> None:
         agent = simulator.agents[event.dst]
         artifact_id = tuple(event.payload["artifact_id"])
-        entry = agent.cache.remove_artifact(artifact_id) if agent.cache.artifact_exists(artifact_id) else None
+        entry = (
+            agent.cache.remove_artifact(artifact_id)
+            if agent.cache.artifact_exists(artifact_id)
+            else None
+        )
         simulator.trace.append(
             simulator.trace_line_type(
                 simulator.now,
@@ -335,18 +372,14 @@ class EventualProtocol(ConsistencyProtocol):
 
         artifact = ConsistencyProtocol.create_artifact(simulator, event)
         if event.dst == "cache":
-            if artifact:
-                agent.cache.overwrite_artifact(artifact)
-            else:
-                agent.cache.store_artifact(artifact)
+            agent.cache.store_artifact(artifact)
             # TODO: some trace here for cache commit??
             # should there be any reason to invalidate a cache write?
             return
 
-        if simulator.global_memory.artifact_exists(artifact_id):
-            simulator.global_memory.overwrite_artifact(artifact)
-        else:
-            simulator.global_memory.store_artifact(artifact)
+        # Since we write to global memory the correct artifact after an EV_SYNC_REQ, we also need to update the cache
+        agent.cache.store_artifact(artifact)
+        simulator.global_memory.store_artifact(artifact)
 
         writer = simulator.agents[event.src]
         latency = simulator.now - int(event.payload["requested_t"])
