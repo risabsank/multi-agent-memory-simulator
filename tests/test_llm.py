@@ -29,8 +29,8 @@ def test_llm_judge_success_populates_prompt_metadata() -> None:
     sim = Simulator(
         agents=[Agent("A", Cache(1, 1, human2bytes("1 gb"), 4096))],
         global_memory=GlobalMemory(
-            read_latency=1,
-            write_latency=1,
+            read_latency=2,
+            write_latency=2,
             swap_latency=100,
             total_size=human2bytes("4 gb"),
             block_size=4096,
@@ -75,8 +75,8 @@ def test_llm_judge_failure_falls_back_with_warning_and_report_metrics() -> None:
     sim = Simulator(
         agents=[Agent("A", Cache(1, 1, human2bytes("1 gb"), 4096))],
         global_memory=GlobalMemory(
-            read_latency=1,
-            write_latency=1,
+            read_latency=2,
+            write_latency=2,
             swap_latency=100,
             total_size=human2bytes("4 gb"),
             block_size=4096,
@@ -90,6 +90,7 @@ def test_llm_judge_failure_falls_back_with_warning_and_report_metrics() -> None:
             llm_timeout_s=0.001,
         ),
     )
+    sim.global_memory.store_artifact(artifact)
     sim.schedule_write(0, "A", artifact_id, 5)
     result = sim.run()
     conflict_event = next(

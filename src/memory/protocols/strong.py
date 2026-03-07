@@ -36,7 +36,9 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
         self.auto_invalidate_on_commit = auto_invalidate_on_commit
 
     @staticmethod
-    def _resolve_coherence_state(old_artifact: Artifact | None, confidence: float) -> CoherenceState:
+    def _resolve_coherence_state(
+        old_artifact: Artifact | None, confidence: float
+    ) -> CoherenceState:
         if old_artifact and confidence < old_artifact.confidence:
             return CoherenceState.CONTESTED
         return CoherenceState.ACCEPTED
@@ -56,7 +58,11 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
                     t,
                     "EV_CACHE_HIT",
                     f"{agent.agent_id} {artifact_id} v{entry.version_id}",
-                    metadata={"agent": agent.agent_id, "artifact_id": artifact_id, "read_source": "cache"},
+                    metadata={
+                        "agent": agent.agent_id,
+                        "artifact_id": artifact_id,
+                        "read_source": "cache",
+                    },
                 )
             )
             simulator.queue.push(
@@ -80,7 +86,11 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
                 t,
                 "EV_CACHE_MISS",
                 f"{agent.agent_id} {artifact_id}",
-                metadata={"agent": agent.agent_id, "artifact_id": artifact_id, "read_source": "global"},
+                metadata={
+                    "agent": agent.agent_id,
+                    "artifact_id": artifact_id,
+                    "read_source": "global",
+                },
             )
         )
         simulator.queue.push(
@@ -90,7 +100,9 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
             dst=agent.agent_id,
             payload={
                 "artifact_id": artifact_id,
-                "version_id": simulator.global_memory.get_artifact(artifact_id).version_id,
+                "version_id": simulator.global_memory.get_artifact(
+                    artifact_id
+                ).version_id,
                 "requested_t": requested_t,
                 "hit": False,
                 "read_source": "global",
@@ -137,7 +149,11 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
         requested_t = event.payload["requested_t"]
 
         new_version = simulator.clock.next(artifact_id)
-        old_artifact = simulator.global_memory.get_artifact(artifact_id) if simulator.global_memory.artifact_exists(artifact_id) else None
+        old_artifact = (
+            simulator.global_memory.get_artifact(artifact_id)
+            if simulator.global_memory.artifact_exists(artifact_id)
+            else None
+        )
 
         scope = old_artifact.scope if old_artifact else ArtifactScope.TASK
         claim_type = old_artifact.claim_type if old_artifact else ClaimType.PLAN
@@ -156,8 +172,11 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
             observed_at=simulator.now,
             valid_at=None,
         )
+        cache_write_time = simulator.now + agent.cache.store_artifact_latency(
+            pending_artifact
+        )
         simulator.queue.push(
-            t=simulator.now + agent.cache.store_artifact_latency(pending_artifact),
+            t=cache_write_time,
             event_type=EventType.EV_WRITE_COMMIT,
             src=agent.agent_id,
             dst="cache",
@@ -205,8 +224,14 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
             },
         )
 
+        global_memory_write_time = (
+            simulator.now
+            + simulator.global_memory.store_artifact_latency(pending_artifact)
+        )
+        # Similar to eventual.py, ensure the global write happens after the cache write
+        assert global_memory_write_time > cache_write_time
         simulator.queue.push(
-            t=simulator.now + simulator.global_memory.store_artifact_latency(pending_artifact),
+            t=global_memory_write_time,
             event_type=EventType.EV_WRITE_COMMIT,
             src=agent.agent_id,
             dst="global",
@@ -230,10 +255,7 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
         agent = simulator.agents[event.src]
         if event.dst == "cache":
             artifact = ConsistencyProtocol.create_artifact(simulator, event)
-            if agent.cache.artifact_exists(artifact_id):
-                agent.cache.overwrite_artifact(artifact)
-            else:
-                agent.cache.store_artifact(artifact)
+            agent.cache.store_artifact(artifact)
             # TODO: add trace log statement
             return
 
@@ -262,7 +284,9 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
             )
         )
 
-        if self.auto_invalidate_on_commit:  # schedule invalidations only after global commit visibility is established
+        if (
+            self.auto_invalidate_on_commit
+        ):  # schedule invalidations only after global commit visibility is established
             for agent_id in simulator.agents:
                 if agent_id == event.src:
                     continue
@@ -278,16 +302,17 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
         if event.type == EventType.EV_SYNC_REQ:
             agent = simulator.agents[event.src]
             artifact_id = tuple(event.payload["artifact_id"])
-            if simulator.global_memory.artifact_exists(artifact_id):
+            if not simulator.global_memory.artifact_exists(artifact_id):
                 return
 
             artifact = simulator.global_memory.get_artifact(artifact_id)
-            local_entry = agent.cache.get_artifact(artifact_id) if agent.cache.artifact_exists(artifact_id) else None
+            local_entry = (
+                agent.cache.get_artifact(artifact_id)
+                if agent.cache.artifact_exists(artifact_id)
+                else None
+            )
             stale_before = local_entry.version_id if local_entry else None
-            if agent.cache.artifact_exists(artifact_id):
-                agent.cache.overwrite_artifact(artifact)
-            else:
-                agent.cache.store_artifact(artifact)
+            agent.cache.store_artifact(artifact)
 
             simulator.trace.append(
                 simulator.trace_line_type(
@@ -307,8 +332,14 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
         artifact_id = tuple(event.payload["artifact_id"])
 
         # Retrieve the currently accepted artifact
-        previous = simulator.global_memory.get_artifact(artifact_id) if simulator.global_memory.artifact_exists(artifact_id) else None
-        confidence = float(event.payload["confidence"])  # Extract the candidate write's confidence score from the event.
+        previous = (
+            simulator.global_memory.get_artifact(artifact_id)
+            if simulator.global_memory.artifact_exists(artifact_id)
+            else None
+        )
+        confidence = float(
+            event.payload["confidence"]
+        )  # Extract the candidate write's confidence score from the event.
         # conflict resolution policy
         decision = self.conflict_judge.judge(
             previous=previous,
@@ -334,7 +365,11 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
     def on_invalidate_req(self, simulator: Simulator, event: Event) -> None:
         agent = simulator.agents[event.dst]
         artifact_id = tuple(event.payload["artifact_id"])
-        entry = agent.cache.remove_artifact(artifact_id) if agent.cache.artifact_exists(artifact_id) else None
+        entry = (
+            agent.cache.remove_artifact(artifact_id)
+            if agent.cache.artifact_exists(artifact_id)
+            else None
+        )
         simulator.trace.append(
             simulator.trace_line_type(
                 simulator.now,

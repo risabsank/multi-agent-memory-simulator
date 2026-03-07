@@ -1,4 +1,4 @@
-from memory.model import Agent, Artifact, ArtifactScope, GlobalMemory, Memory
+from memory.model import Agent, Artifact, ArtifactScope, Cache, GlobalMemory, Memory
 from memory.protocols import EventualProtocol, WriteThroughStrongProtocol
 from memory.simulator import Simulator
 from memory.lib import human2bytes
@@ -6,13 +6,17 @@ from memory.lib import human2bytes
 
 def test_manual_sync_updates_stale_cache_entry() -> None:
     artifact_id = ("T1", "shared")
-    artifact = Artifact(artifact_id=artifact_id, version_id=1, size=10, scope=ArtifactScope.TASK)
+    artifact = Artifact(
+        artifact_id=artifact_id, version_id=1, size=10, scope=ArtifactScope.TASK
+    )
     sim = Simulator(
-        agents=[Agent("A", Memory(1, 1, human2bytes("1 gb"), 4096)),
-                Agent("B", Memory(1, 1, human2bytes("1 gb"), 4096))],
+        agents=[
+            Agent("A", Cache(1, 1, human2bytes("1 gb"), 4096)),
+            Agent("B", Cache(1, 1, human2bytes("1 gb"), 4096)),
+        ],
         global_memory=GlobalMemory(
-            read_latency=1,
-            write_latency=1,
+            read_latency=2,
+            write_latency=2,
             swap_latency=100,
             total_size=human2bytes("4 gb"),
             block_size=4096,
@@ -26,7 +30,7 @@ def test_manual_sync_updates_stale_cache_entry() -> None:
     # A writes v2 and commits globally
     sim.schedule_write(2, "A", artifact_id, 20)
     # B explicitly syncs after commit to refresh cache
-    sim.schedule_sync(4, "B", artifact_id)
+    sim.schedule_sync(5, "B", artifact_id)  # needs to be 5 as write commits at 2 + 2
 
     result = sim.run()
 
@@ -41,9 +45,11 @@ def test_manual_sync_updates_stale_cache_entry() -> None:
 
 def test_manual_invalidate_removes_cache_entry() -> None:
     artifact_id = ("T1", "shared")
-    artifact = Artifact(artifact_id=artifact_id, version_id=1, size=10, scope=ArtifactScope.TASK)
+    artifact = Artifact(
+        artifact_id=artifact_id, version_id=1, size=10, scope=ArtifactScope.TASK
+    )
     sim = Simulator(
-        agents=[Agent("A", Memory(1, 1, human2bytes("1 gb"), 4096))],
+        agents=[Agent("A", Cache(0, 0, human2bytes("1 gb"), 4096))],
         global_memory=GlobalMemory(
             read_latency=1,
             write_latency=1,
@@ -56,7 +62,9 @@ def test_manual_invalidate_removes_cache_entry() -> None:
     sim.global_memory.store_artifact(artifact)
 
     sim.schedule_read(0, "A", artifact_id)
-    sim.schedule_invalidate(2, "A", artifact_id, reason="manual")
+    sim.schedule_invalidate(
+        3, "A", artifact_id, reason="manual"
+    )  # Has to be 3 since sync will be done at 0 (start) + 1 (cache miss latency) + 1 (write latency)
 
     result = sim.run()
 
@@ -71,10 +79,14 @@ def test_manual_invalidate_removes_cache_entry() -> None:
 
 def test_eventual_auto_invalidate_forces_remote_miss() -> None:
     artifact_id = ("T1", "shared")
-    artifact = Artifact(artifact_id=artifact_id, version_id=1, size=10, scope=ArtifactScope.TASK)
+    artifact = Artifact(
+        artifact_id=artifact_id, version_id=1, size=10, scope=ArtifactScope.TASK
+    )
     sim = Simulator(
-        agents=[Agent("A", Memory(1, 1, human2bytes("1 gb"), 4096)),
-                Agent("B", Memory(1, 1, human2bytes("1 gb"), 4096))],
+        agents=[
+            Agent("A", Cache(0, 0, human2bytes("1 gb"), 4096)),
+            Agent("B", Cache(0, 0, human2bytes("1 gb"), 4096)),
+        ],
         global_memory=GlobalMemory(
             read_latency=1,
             write_latency=1,
@@ -93,7 +105,11 @@ def test_eventual_auto_invalidate_forces_remote_miss() -> None:
 
     result = sim.run()
 
-    b_reads = [line for line in result.trace if line.event == "EV_READ_RESP" and line.metadata.get("agent") == "B"]
+    b_reads = [
+        line
+        for line in result.trace
+        if line.event == "EV_READ_RESP" and line.metadata.get("agent") == "B"
+    ]
     assert b_reads[-1].metadata["read_source"] == "global"
 
     invalidations = [line for line in result.trace if line.event == "EV_INVALIDATE"]

@@ -8,14 +8,15 @@ from .events import Event, EventQueue, EventType
 from .model import Agent, ArtifactId, GlobalMemory, VersionClock
 from .protocols import ConsistencyProtocol, WriteThroughStrongProtocol
 
+
 # structured execution log entry for each simulation step
 # acts as an event journal
 @dataclass
 class TraceLine:
-    t: int # simulation time
-    event: str # event label
-    detail: str # summary
-    metadata: dict[str, object | Iterable[Any]] = field(default_factory=dict) # context
+    t: int  # simulation time
+    event: str  # event label
+    detail: str  # summary
+    metadata: dict[str, object | Iterable[Any]] = field(default_factory=dict)  # context
 
 
 @dataclass
@@ -29,7 +30,7 @@ class SimulationResult:
         if stats.read_count == 0:
             return 0.0
         return stats.read_latency_total / stats.read_count
-    
+
     def avg_write_latency(self, agent_id: str) -> float:
         stats = self.agents[agent_id].stats
         if stats.write_count == 0:
@@ -69,13 +70,11 @@ class Simulator:
         global_memory: GlobalMemory,
         protocol: ConsistencyProtocol | None = None,
     ) -> None:
-        self.agents = {a.agent_id: a for a in agents} # agents indexed
-        self.global_memory = global_memory # 
+        self.agents = {a.agent_id: a for a in agents}  # agents indexed
+        self.global_memory = global_memory  #
         self.queue = EventQueue()
         self.protocol = protocol or WriteThroughStrongProtocol()
         self.clock = VersionClock()
-        for artifact_id, artifact in self.global_memory.get_all_artifacts():
-            self.clock._versions[artifact_id] = artifact.version_id
 
         self.now = 0
         self.trace: list[TraceLine] = []
@@ -89,7 +88,9 @@ class Simulator:
             payload={"artifact_id": artifact_id, "requested_t": t},
         )
 
-    def schedule_write(self, t: int, agent_id: str, artifact_id: ArtifactId, size: int) -> None:
+    def schedule_write(
+        self, t: int, agent_id: str, artifact_id: ArtifactId, size: int
+    ) -> None:
         self.queue.push(
             t=t,
             event_type=EventType.EV_WRITE_REQ,
@@ -97,7 +98,7 @@ class Simulator:
             dst=agent_id,
             payload={"artifact_id": artifact_id, "size": size, "requested_t": t},
         )
-    
+
     def schedule_sync(self, t: int, agent_id: str, artifact_id: ArtifactId) -> None:
         self.queue.push(
             t=t,
@@ -107,7 +108,9 @@ class Simulator:
             payload={"artifact_id": artifact_id, "requested_t": t},
         )
 
-    def schedule_invalidate(self, t: int, agent_id: str, artifact_id: ArtifactId, reason: str = "manual") -> None:
+    def schedule_invalidate(
+        self, t: int, agent_id: str, artifact_id: ArtifactId, reason: str = "manual"
+    ) -> None:
         self.queue.push(
             t=t,
             event_type=EventType.EV_INVALIDATE,
@@ -116,42 +119,72 @@ class Simulator:
             payload={"artifact_id": artifact_id, "reason": reason},
         )
 
-    def run(self) -> SimulationResult:
-        while len(self.queue) > 0: # while queue not empry
-            event = self.queue.pop() # pop next event
-            self.now = event.t
-            self._handle(event) # based on event type, perform an action
+    def pre_run(self) -> None:
+        """
+        Run some bookkeeping/initialization code prior to run() but after __init__()
+        """
+        for artifact_id, artifact in self.global_memory.get_all_artifacts():
+            self.clock._versions[artifact_id] = artifact.version_id
 
-        return SimulationResult(trace=self.trace, agents=self.agents, global_memory=self.global_memory)
-    
-    def build_report(self) -> RunReport: # creates benchmark output aligned with protocol comparison goals
+    def run(self) -> SimulationResult:
+        self.pre_run()
+        while len(self.queue) > 0:  # while queue not empry
+            event = self.queue.pop()  # pop next event
+            self.now = event.t
+            self._handle(event)  # based on event type, perform an action
+
+        return SimulationResult(
+            trace=self.trace, agents=self.agents, global_memory=self.global_memory
+        )
+
+    def build_report(
+        self,
+    ) -> RunReport:  # creates benchmark output aligned with protocol comparison goals
         total_events = len(self.trace)
         cache_hits = sum(1 for t in self.trace if t.event == "EV_CACHE_HIT")
         cache_misses = sum(1 for t in self.trace if t.event == "EV_CACHE_MISS")
-        conflict_checks = sum(1 for t in self.trace if t.event == EventType.EV_CONFLICT_CHECK.value)
+        conflict_checks = sum(
+            1 for t in self.trace if t.event == EventType.EV_CONFLICT_CHECK.value
+        )
 
-        sync_requests = sum(1 for t in self.trace if t.event == EventType.EV_SYNC_REQ.value)
-        invalidations = sum(1 for t in self.trace if t.event == EventType.EV_INVALIDATE.value)
+        sync_requests = sum(
+            1 for t in self.trace if t.event == EventType.EV_SYNC_REQ.value
+        )
+        invalidations = sum(
+            1 for t in self.trace if t.event == EventType.EV_INVALIDATE.value
+        )
 
         contested_writes = sum(
             1
             for t in self.trace
-            if t.event == "EV_WRITE_REQ" and t.metadata.get("coherence_state") == "contested"
+            if t.event == "EV_WRITE_REQ"
+            and t.metadata.get("coherence_state") == "contested"
         )
         accepted_writes = sum(
             1
             for t in self.trace
-            if t.event == "EV_WRITE_REQ" and t.metadata.get("coherence_state") == "accepted"
+            if t.event == "EV_WRITE_REQ"
+            and t.metadata.get("coherence_state") == "accepted"
         )
 
-        read_samples = [lat for a in self.agents.values() for lat in a.stats.read_latencies]
-        write_samples = [lat for a in self.agents.values() for lat in a.stats.write_latencies]
-        avg_read_latency = sum(read_samples) / len(read_samples) if read_samples else 0.0
-        avg_write_latency = sum(write_samples) / len(write_samples) if write_samples else 0.0
+        read_samples = [
+            lat for a in self.agents.values() for lat in a.stats.read_latencies
+        ]
+        write_samples = [
+            lat for a in self.agents.values() for lat in a.stats.write_latencies
+        ]
+        avg_read_latency = (
+            sum(read_samples) / len(read_samples) if read_samples else 0.0
+        )
+        avg_write_latency = (
+            sum(write_samples) / len(write_samples) if write_samples else 0.0
+        )
 
         # filter for conflict check metadata
         conflict_metadata = [
-            t.metadata for t in self.trace if t.event == EventType.EV_CONFLICT_CHECK.value
+            t.metadata
+            for t in self.trace
+            if t.event == EventType.EV_CONFLICT_CHECK.value
         ]
 
         # specifies whether we are using LLM or deterministic fallback judge
@@ -160,7 +193,11 @@ class Simulator:
             for m in conflict_metadata
             if (m.get("provider") or m.get("judge_provider")) is not None
         )
-        fallback_count = sum(1 for m in conflict_metadata if bool(m.get("fallback_used") or m.get("judge_fallback_used")))
+        fallback_count = sum(
+            1
+            for m in conflict_metadata
+            if bool(m.get("fallback_used") or m.get("judge_fallback_used"))
+        )
 
         # breaks down LLM failure distribution
         failure_counter = Counter()
@@ -184,7 +221,9 @@ class Simulator:
         ]
 
         # latency contributed by judge
-        avg_judge_latency = sum(latency_samples) / len(latency_samples) if latency_samples else None
+        avg_judge_latency = (
+            sum(latency_samples) / len(latency_samples) if latency_samples else None
+        )
 
         return RunReport(
             total_events=total_events,
@@ -217,5 +256,7 @@ class Simulator:
         handlers[event.type](self, event)
 
     @staticmethod
-    def trace_line_type(t: int, event: str, detail: str, metadata: dict[str, object] | None = None) -> TraceLine:
+    def trace_line_type(
+        t: int, event: str, detail: str, metadata: dict[str, object] | None = None
+    ) -> TraceLine:
         return TraceLine(t=t, event=event, detail=detail, metadata=metadata or {})
