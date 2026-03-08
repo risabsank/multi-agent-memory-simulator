@@ -156,8 +156,16 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
             else None
         )
 
-        scope = old_artifact.scope if old_artifact else ArtifactScope.TASK
-        claim_type = old_artifact.claim_type if old_artifact else ClaimType.PLAN
+        scope = event.payload.get(
+            "scope", old_artifact.scope if old_artifact else ArtifactScope.TASK
+        )
+        claim_type = event.payload.get(
+            "claim_type", old_artifact.claim_type if old_artifact else ClaimType.PLAN
+        )
+        if isinstance(scope, str):
+            scope = ArtifactScope(scope)
+        if isinstance(claim_type, str):
+            claim_type = ClaimType(claim_type)
         confidence = float(event.payload.get("confidence", 0.8))
         coherence_state = self._resolve_coherence_state(old_artifact, confidence)
 
