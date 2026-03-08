@@ -316,6 +316,12 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
                     payload={"artifact_id": artifact_id, "reason": "write_commit"},
                 )
 
+        simulator.schedule_trigger_syncs_after_commit(
+            t=simulator.now,
+            writer_id=event.src,
+            artifact_id=artifact_id,
+        )
+
     def on_sync_req(self, simulator: Simulator, event: Event) -> None:
         if event.type == EventType.EV_SYNC_REQ:
             agent = simulator.agents[event.src]

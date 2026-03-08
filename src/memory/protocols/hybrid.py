@@ -370,3 +370,10 @@ class HybridProtocol(ConsistencyProtocol):
                         "reason": "write_commit",
                     },
                 )
+        
+
+        simulator.schedule_trigger_syncs_after_commit(
+            t=simulator.now,
+            writer_id=event.src,
+            artifact_id=tuple(event.payload["artifact_id"]),
+        )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 from .events import Event, EventQueue, EventType
 from .model import Agent, ArtifactId, GlobalMemory, VersionClock
@@ -87,17 +87,33 @@ class Simulator:
         agents: list[Agent],
         global_memory: GlobalMemory,
         protocol: ConsistencyProtocol | None = None,
+        *,
+        sync_policy: Literal["none", "periodic", "trigger-based"] = "none",
+        sync_interval: int = 10,
     ) -> None:
         self.agents = {a.agent_id: a for a in agents}  # agents indexed
         self.global_memory = global_memory  #
         self.queue = EventQueue()
         self.protocol = protocol or WriteThroughStrongProtocol()
         self.clock = VersionClock()
+        self.sync_policy = sync_policy
+        self.sync_interval = sync_interval
+        self._max_user_scheduled_t = 0
+        self._known_artifact_ids: set[ArtifactId] = set()
+
+        if self.sync_policy not in {"none", "periodic", "trigger-based"}:
+            raise ValueError(
+                f"Unsupported sync policy '{self.sync_policy}'. Expected one of: none, periodic, trigger-based."
+            )
+        if self.sync_policy == "periodic" and self.sync_interval <= 0:
+            raise ValueError("sync_interval must be > 0 for periodic sync policy")
 
         self.now = 0
         self.trace: list[TraceLine] = []
 
     def schedule_read(self, t: int, agent_id: str, artifact_id: ArtifactId) -> None:
+        self._max_user_scheduled_t = max(self._max_user_scheduled_t, t)
+        self._known_artifact_ids.add(artifact_id)
         self.queue.push(
             t=t,
             event_type=EventType.EV_READ_REQ,
@@ -109,6 +125,8 @@ class Simulator:
     def schedule_write(
         self, t: int, agent_id: str, artifact_id: ArtifactId, size: int
     ) -> None:
+        self._max_user_scheduled_t = max(self._max_user_scheduled_t, t)
+        self._known_artifact_ids.add(artifact_id)
         self.queue.push(
             t=t,
             event_type=EventType.EV_WRITE_REQ,
@@ -118,6 +136,8 @@ class Simulator:
         )
 
     def schedule_sync(self, t: int, agent_id: str, artifact_id: ArtifactId) -> None:
+        self._max_user_scheduled_t = max(self._max_user_scheduled_t, t)
+        self._known_artifact_ids.add(artifact_id)
         self.queue.push(
             t=t,
             event_type=EventType.EV_SYNC_REQ,
@@ -129,6 +149,8 @@ class Simulator:
     def schedule_invalidate(
         self, t: int, agent_id: str, artifact_id: ArtifactId, reason: str = "manual"
     ) -> None:
+        self._max_user_scheduled_t = max(self._max_user_scheduled_t, t)
+        self._known_artifact_ids.add(artifact_id)
         self.queue.push(
             t=t,
             event_type=EventType.EV_INVALIDATE,
@@ -143,6 +165,50 @@ class Simulator:
         """
         for artifact_id, artifact in self.global_memory.get_all_artifacts():
             self.clock._versions[artifact_id] = artifact.version_id
+            self._known_artifact_ids.add(artifact_id)
+
+        self._schedule_periodic_syncs()
+
+    def _schedule_periodic_syncs(self) -> None:
+        if self.sync_policy != "periodic":
+            return
+        if not self._known_artifact_ids:
+            return
+
+        horizon = self._max_user_scheduled_t
+        if horizon < self.sync_interval:
+            return
+
+        for t in range(self.sync_interval, horizon + 1, self.sync_interval):
+            for agent_id in self.agents:
+                for artifact_id in self._known_artifact_ids:
+                    self.queue.push(
+                        t=t,
+                        event_type=EventType.EV_SYNC_REQ,
+                        src=agent_id,
+                        dst="global",
+                        payload={"artifact_id": artifact_id, "requested_t": t},
+                    )
+
+    def schedule_trigger_syncs_after_commit(
+        self, *, t: int, writer_id: str, artifact_id: ArtifactId
+    ) -> None:
+        if self.sync_policy != "trigger-based":
+            return
+        for agent_id in self.agents:
+            if agent_id == writer_id:
+                continue
+            self.queue.push(
+                t=t,
+                event_type=EventType.EV_SYNC_REQ,
+                src=agent_id,
+                dst="global",
+                payload={
+                    "artifact_id": artifact_id,
+                    "requested_t": t,
+                    "reason": "triggered_by_global_commit",
+                },
+            )
 
     def run(self) -> SimulationResult:
         self.pre_run()
