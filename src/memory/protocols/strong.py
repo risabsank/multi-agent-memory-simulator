@@ -136,6 +136,7 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
                     "version_id": version_id,
                     "latency": latency,
                     "read_source": event.payload.get("read_source", event.src),
+                    "global_version_at_read": artifact.version_id,
                     "coherence_state": artifact.coherence_state.value,
                 },
                 # observabiliy and semantic state become queryable per read event

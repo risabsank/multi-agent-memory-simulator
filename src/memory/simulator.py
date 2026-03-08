@@ -55,7 +55,25 @@ class RunReport:
     avg_judge_latency: float | None = None
     sync_requests: int = 0
     invalidations: int = 0
-
+    cache_hit_rate: float = 0.0
+    contested_ratio: float = 0.0
+    avg_visibility_lag: float = 0.0
+    stale_reads: int = 0
+    stale_read_rate: float = 0.0
+    avg_convergence_time: float = 0.0
+    read_latency_p50: float = 0.0
+    read_latency_p95: float = 0.0
+    read_latency_p99: float = 0.0
+    write_latency_p50: float = 0.0
+    write_latency_p95: float = 0.0
+    write_latency_p99: float = 0.0
+    read_your_writes_checks: int = 0
+    read_your_writes_successes: int = 0
+    read_your_writes_success_rate: float = 0.0
+    monotonic_read_violations: int = 0
+    avg_stale_version_gap: float = 0.0
+    p95_stale_version_gap: float = 0.0
+    max_stale_version_gap: int = 0
 
 class Simulator:
     """Minimal discrete-event simulator vertical slice.
@@ -140,29 +158,30 @@ class Simulator:
     def build_report(
         self,
     ) -> RunReport:  # creates benchmark output aligned with protocol comparison goals
+        ordered_trace = sorted(self.trace, key=lambda line: line.t)
         total_events = len(self.trace)
-        cache_hits = sum(1 for t in self.trace if t.event == "EV_CACHE_HIT")
-        cache_misses = sum(1 for t in self.trace if t.event == "EV_CACHE_MISS")
+        cache_hits = sum(1 for t in ordered_trace if t.event == "EV_CACHE_HIT")
+        cache_misses = sum(1 for t in ordered_trace if t.event == "EV_CACHE_MISS")
         conflict_checks = sum(
-            1 for t in self.trace if t.event == EventType.EV_CONFLICT_CHECK.value
+            1 for t in ordered_trace if t.event == EventType.EV_CONFLICT_CHECK.value
         )
 
         sync_requests = sum(
-            1 for t in self.trace if t.event == EventType.EV_SYNC_REQ.value
+            1 for t in ordered_trace if t.event == EventType.EV_SYNC_REQ.value
         )
         invalidations = sum(
-            1 for t in self.trace if t.event == EventType.EV_INVALIDATE.value
+            1 for t in ordered_trace if t.event == EventType.EV_INVALIDATE.value
         )
 
         contested_writes = sum(
             1
-            for t in self.trace
+            for t in ordered_trace
             if t.event == "EV_WRITE_REQ"
             and t.metadata.get("coherence_state") == "contested"
         )
         accepted_writes = sum(
             1
-            for t in self.trace
+            for t in ordered_trace
             if t.event == "EV_WRITE_REQ"
             and t.metadata.get("coherence_state") == "accepted"
         )
@@ -180,12 +199,162 @@ class Simulator:
             sum(write_samples) / len(write_samples) if write_samples else 0.0
         )
 
+        def _percentile(samples: list[int], pct: float) -> float:
+            if not samples:
+                return 0.0
+            ordered = sorted(samples)
+            idx = int((len(ordered) - 1) * pct)
+            return float(ordered[idx])
+
+        read_latency_p50 = _percentile(read_samples, 0.50)
+        read_latency_p95 = _percentile(read_samples, 0.95)
+        read_latency_p99 = _percentile(read_samples, 0.99)
+        write_latency_p50 = _percentile(write_samples, 0.50)
+        write_latency_p95 = _percentile(write_samples, 0.95)
+        write_latency_p99 = _percentile(write_samples, 0.99)
+
         # filter for conflict check metadata
         conflict_metadata = [
             t.metadata
-            for t in self.trace
+            for t in ordered_trace
             if t.event == EventType.EV_CONFLICT_CHECK.value
         ]
+
+
+        cache_total = cache_hits + cache_misses
+        cache_hit_rate = cache_hits / cache_total if cache_total else 0.0
+
+        write_total = accepted_writes + contested_writes
+        contested_ratio = contested_writes / write_total if write_total else 0.0
+
+        write_commits = [
+            t
+            for t in ordered_trace
+            if t.event == EventType.EV_WRITE_COMMIT.value
+            and isinstance(t.metadata.get("latency"), (int, float))
+        ]
+        avg_visibility_lag = (
+            sum(float(t.metadata["latency"]) for t in write_commits) / len(write_commits)
+            if write_commits
+            else 0.0
+        )
+
+        read_events = [
+            t for t in ordered_trace if t.event == EventType.EV_READ_RESP.value
+        ]
+        stale_reads = sum(
+            1
+            for t in read_events
+            if isinstance(t.metadata.get("version_id"), int)
+            and isinstance(t.metadata.get("global_version_at_read"), int)
+            and int(t.metadata["version_id"]) < int(t.metadata["global_version_at_read"])
+        )
+        stale_read_rate = stale_reads / len(read_events) if read_events else 0.0
+
+        stale_version_gaps = [
+            int(t.metadata["global_version_at_read"]) - int(t.metadata["version_id"])
+            for t in read_events
+            if isinstance(t.metadata.get("version_id"), int)
+            and isinstance(t.metadata.get("global_version_at_read"), int)
+            and int(t.metadata["version_id"]) < int(t.metadata["global_version_at_read"])
+        ]
+        avg_stale_version_gap = (
+            sum(stale_version_gaps) / len(stale_version_gaps)
+            if stale_version_gaps
+            else 0.0
+        )
+        p95_stale_version_gap = (
+            _percentile(stale_version_gaps, 0.95) if stale_version_gaps else 0.0
+        )
+        max_stale_version_gap = max(stale_version_gaps) if stale_version_gaps else 0
+
+        # Approximate convergence: after global commit, how long until each other agent
+        # first reads that version (or newer) for the same artifact.
+        convergence_samples: list[int] = []
+        for commit in write_commits:
+            artifact_id = commit.metadata.get("artifact_id")
+            version_id = commit.metadata.get("version_id")
+            writer = commit.metadata.get("provenance")
+            if not isinstance(artifact_id, tuple) or not isinstance(version_id, int):
+                continue
+            for reader_id in self.agents:
+                if reader_id == writer:
+                    continue
+                catchup = next(
+                    (
+                        r
+                        for r in read_events
+                        if r.t >= commit.t
+                        and r.metadata.get("agent") == reader_id
+                        and r.metadata.get("artifact_id") == artifact_id
+                        and isinstance(r.metadata.get("version_id"), int)
+                        and int(r.metadata["version_id"]) >= version_id
+                    ),
+                    None,
+                )
+                if catchup is not None:
+                    convergence_samples.append(catchup.t - commit.t)
+        avg_convergence_time = (
+            sum(convergence_samples) / len(convergence_samples)
+            if convergence_samples
+            else 0.0
+        )
+
+        # Read-your-writes approximation: writer's first post-write read should observe
+        # at least the written version for the same artifact.
+        write_requests = [
+            t
+            for t in ordered_trace
+            if t.event == EventType.EV_WRITE_REQ.value
+            and isinstance(t.metadata.get("agent"), str)
+            and isinstance(t.metadata.get("artifact_id"), tuple)
+            and isinstance(t.metadata.get("version_id"), int)
+        ]
+        read_your_writes_checks = 0
+        read_your_writes_successes = 0
+        for write_req in write_requests:
+            writer = str(write_req.metadata["agent"])
+            artifact_id = write_req.metadata["artifact_id"]
+            written_version = int(write_req.metadata["version_id"])
+            writer_followup = next(
+                (
+                    r
+                    for r in read_events
+                    if r.t >= write_req.t
+                    and r.metadata.get("agent") == writer
+                    and r.metadata.get("artifact_id") == artifact_id
+                    and isinstance(r.metadata.get("version_id"), int)
+                ),
+                None,
+            )
+            if writer_followup is None:
+                continue
+            read_your_writes_checks += 1
+            if int(writer_followup.metadata["version_id"]) >= written_version:
+                read_your_writes_successes += 1
+        read_your_writes_success_rate = (
+            read_your_writes_successes / read_your_writes_checks
+            if read_your_writes_checks
+            else 0.0
+        )
+
+        monotonic_read_violations = 0
+        per_reader_stream: dict[tuple[str, object], int] = {}
+        for read_event in read_events:
+            agent_id = read_event.metadata.get("agent")
+            artifact_id = read_event.metadata.get("artifact_id")
+            version_id = read_event.metadata.get("version_id")
+            if (
+                not isinstance(agent_id, str)
+                or not isinstance(version_id, int)
+                or artifact_id is None
+            ):
+                continue
+            key = (agent_id, artifact_id)
+            previous_version = per_reader_stream.get(key)
+            if previous_version is not None and version_id < previous_version:
+                monotonic_read_violations += 1
+            per_reader_stream[key] = version_id
 
         # specifies whether we are using LLM or deterministic fallback judge
         provider_counter = Counter(
@@ -241,6 +410,25 @@ class Simulator:
             avg_judge_latency=avg_judge_latency,
             sync_requests=sync_requests,
             invalidations=invalidations,
+            cache_hit_rate=cache_hit_rate,
+            contested_ratio=contested_ratio,
+            avg_visibility_lag=avg_visibility_lag,
+            stale_reads=stale_reads,
+            stale_read_rate=stale_read_rate,
+            avg_convergence_time=avg_convergence_time,
+            read_latency_p50=read_latency_p50,
+            read_latency_p95=read_latency_p95,
+            read_latency_p99=read_latency_p99,
+            write_latency_p50=write_latency_p50,
+            write_latency_p95=write_latency_p95,
+            write_latency_p99=write_latency_p99,
+            read_your_writes_checks=read_your_writes_checks,
+            read_your_writes_successes=read_your_writes_successes,
+            read_your_writes_success_rate=read_your_writes_success_rate,
+            monotonic_read_violations=monotonic_read_violations,
+            avg_stale_version_gap=avg_stale_version_gap,
+            p95_stale_version_gap=p95_stale_version_gap,
+            max_stale_version_gap=max_stale_version_gap,
         )
 
     def _handle(self, event: Event) -> None:
