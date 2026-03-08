@@ -14,9 +14,10 @@ def build_conflict_judge(
     llm_provider: str = "llm",
     llm_model: str = "unknown",
     llm_timeout_s: float = 0.25,
+    deterministic_profile: str = "balanced",
 ) -> ConflictJudge:
     if judge_mode == "deterministic":
-        return DeterministicConflictJudge()
+        return DeterministicConflictJudge(profile=deterministic_profile)
     if judge_mode == "llm":
         if llm_inference_fn is None:
             raise ValueError("llm_inference_fn is required when judge_mode='llm'")
@@ -25,6 +26,7 @@ def build_conflict_judge(
             provider=llm_provider,
             model=llm_model,
             timeout_s=llm_timeout_s,
+            fallback_judge=DeterministicConflictJudge(profile=deterministic_profile),
         )
     raise ValueError(f"unsupported judge_mode: {judge_mode}")
 

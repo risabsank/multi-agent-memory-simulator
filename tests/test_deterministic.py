@@ -59,6 +59,50 @@ def test_deterministic_conflict_judge_parity_states() -> None:
     assert abs(accepted.confidence_delta - 0.05) < 1e-9
 
 
+def test_deterministic_conflict_judge_admission_profiles() -> None:
+    previous = Artifact(
+        artifact_id=("T1", "shared"),
+        version_id=1,
+        size=10,
+        scope=ArtifactScope.TASK,
+        confidence=0.9,
+    )
+
+    permissive = DeterministicConflictJudge(profile="permissive")
+    balanced = DeterministicConflictJudge(profile="balanced")
+    strict = DeterministicConflictJudge(profile="strict")
+
+    permissive_decision = permissive.judge(
+        previous=previous,
+        candidate_confidence=0.86,
+        candidate_payload={},
+    )
+    balanced_decision = balanced.judge(
+        previous=previous,
+        candidate_confidence=0.86,
+        candidate_payload={},
+    )
+    strict_decision = strict.judge(
+        previous=previous,
+        candidate_confidence=0.93,
+        candidate_payload={},
+    )
+
+    assert permissive_decision.coherence_state == CoherenceState.ACCEPTED
+    assert balanced_decision.coherence_state == CoherenceState.CONTESTED
+    assert balanced_decision.reason_codes == ["lower_confidence_than_accepted"]
+    assert strict_decision.coherence_state == CoherenceState.CONTESTED
+    assert strict_decision.reason_codes == ["below_admission_profile_threshold"]
+
+
+def test_deterministic_conflict_judge_rejects_unknown_profile() -> None:
+    try:
+        DeterministicConflictJudge(profile="unknown")
+    except ValueError as exc:
+        assert "unsupported deterministic judge profile" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for unknown profile")
+
 def test_strong_protocol_conflict_check_has_judge_audit_metadata() -> None:
     artifact_id = ("T1", "shared")
     artifact = Artifact(

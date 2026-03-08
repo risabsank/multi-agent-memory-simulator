@@ -6,7 +6,7 @@ from memory.protocols.base import ConsistencyProtocol
 
 from ..events import Event, EventType
 from ..model import Artifact, ArtifactScope, CacheEntry, ClaimType, CoherenceState
-from .judges import ConflictJudge, build_conflict_judge
+from .judges import ConflictJudge, DeterministicConflictJudge, build_conflict_judge
 
 if TYPE_CHECKING:
     from ..simulator import Simulator
@@ -25,6 +25,7 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
         llm_provider: str = "llm",
         llm_model: str = "unknown",
         llm_timeout_s: float = 0.25,
+        deterministic_profile: str = "balanced",
     ) -> None:
         self.conflict_judge = conflict_judge or build_conflict_judge(
             judge_mode=judge_mode,
@@ -32,14 +33,22 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
             llm_provider=llm_provider,
             llm_model=llm_model,
             llm_timeout_s=llm_timeout_s,
+            deterministic_profile=deterministic_profile,
         )
         self.auto_invalidate_on_commit = auto_invalidate_on_commit
+        self.deterministic_profile = deterministic_profile
 
     @staticmethod
     def _resolve_coherence_state(
-        old_artifact: Artifact | None, confidence: float
+        self, old_artifact: Artifact | None, confidence: float
     ) -> CoherenceState:
-        if old_artifact and confidence < old_artifact.confidence:
+        if old_artifact is None:
+            return CoherenceState.ACCEPTED
+        min_delta = DeterministicConflictJudge.PROFILE_THRESHOLDS[
+            self.deterministic_profile
+        ]
+        delta = confidence - old_artifact.confidence
+        if delta < min_delta:
             return CoherenceState.CONTESTED
         return CoherenceState.ACCEPTED
 

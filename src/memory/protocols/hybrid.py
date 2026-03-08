@@ -7,7 +7,7 @@ from memory.protocols.base import ConsistencyProtocol
 from ..events import Event, EventType
 from ..model import Artifact, ArtifactScope, ClaimType, CoherenceState
 from .eventual import EventualProtocol
-from .judges import ConflictJudge, build_conflict_judge
+from .judges import ConflictJudge, DeterministicConflictJudge, build_conflict_judge
 
 if TYPE_CHECKING:
     from ..simulator import Simulator
@@ -35,16 +35,19 @@ class HybridProtocol(ConsistencyProtocol):
         llm_provider: str = "llm",
         llm_model: str = "unknown",
         llm_timeout_s: float = 0.25,
+        deterministic_profile: str = "balanced",
     ) -> None:
         self.propagation_delay = max(1, propagation_delay)
         self.auto_invalidate_on_commit = auto_invalidate_on_commit
         self.confidence_gap_threshold = max(0.0, confidence_gap_threshold)
+        self.deterministic_profile = deterministic_profile
         self.conflict_judge = conflict_judge or build_conflict_judge(
             judge_mode=judge_mode,
             llm_inference_fn=llm_inference_fn,
             llm_provider=llm_provider,
             llm_model=llm_model,
             llm_timeout_s=llm_timeout_s,
+            deterministic_profile=deterministic_profile,
         )
         default_high_risk = {ClaimType.FACT, ClaimType.PLAN}
         configured = high_risk_claim_types or default_high_risk
@@ -57,6 +60,7 @@ class HybridProtocol(ConsistencyProtocol):
             propagation_delay=propagation_delay,
             conflict_judge=self.conflict_judge,
             auto_invalidate_on_commit=auto_invalidate_on_commit,
+            deterministic_profile=deterministic_profile,
         )
 
     def on_read_req(self, simulator: Simulator, event: Event) -> None:
@@ -113,8 +117,12 @@ class HybridProtocol(ConsistencyProtocol):
         )
 
         coherence_state = CoherenceState.ACCEPTED
-        if previous and confidence < previous.confidence:
-            coherence_state = CoherenceState.CONTESTED
+        if previous:
+            min_delta = DeterministicConflictJudge.PROFILE_THRESHOLDS[
+                self.deterministic_profile
+            ]
+            if confidence - previous.confidence < min_delta:
+                coherence_state = CoherenceState.CONTESTED
 
         pending_artifact = Artifact(
             artifact_id=artifact_id,
@@ -357,5 +365,8 @@ class HybridProtocol(ConsistencyProtocol):
                     event_type=EventType.EV_INVALIDATE,
                     src="global",
                     dst=agent_id,
-                    payload={"artifact_id": tuple(event.payload["artifact_id"]), "reason": "write_commit"},
+                    payload={
+                        "artifact_id": tuple(event.payload["artifact_id"]),
+                        "reason": "write_commit",
+                    },
                 )
