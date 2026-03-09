@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from hashlib import sha256
 from time import perf_counter
 from typing import Callable
+
+from openai import OpenAI
 
 from ...model import Artifact, CoherenceState
 from .deterministic import DeterministicConflictJudge
@@ -26,18 +29,61 @@ candidate_payload={candidate_payload}
 """
 
 
+def build_openai_inference_fn(model: str = "gpt-4.1-mini") -> Callable[[str], str]:
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+    def inference_fn(prompt: str) -> str:
+        response = client.responses.create(
+            model=model,
+            input=prompt,
+            store=False,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "conflict_decision",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "coherence_state": {
+                                "type": "string",
+                                "enum": ["accepted", "contested", "deprecated"],
+                            },
+                            "reason_codes": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "confidence_delta": {
+                                "type": ["number", "null"],
+                            },
+                        },
+                        "required": [
+                            "coherence_state",
+                            "reason_codes",
+                            "confidence_delta",
+                        ],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+        )
+        return response.output_text
+
+    return inference_fn
+
+
 class LLMConflictJudge:
     """LLM-backed judge with strict schema validation and deterministic fallback."""
 
     def __init__(
         self,
         *,
-        inference_fn: Callable[[str], str], # takes a prompt string that returns model's raw response
-        provider: str = "llm",
-        model: str = "unknown",
-        timeout_s: float = 0.25, # hard timeout for LLM inference
-        prompt_spec: LLMPromptSpec | None = None, # allows swapping in a new prompt
-        fallback_judge: DeterministicConflictJudge | None = None, # defaults to deterministic when LLM path fails
+        inference_fn: Callable[[str], str],
+        provider: str = "openai",
+        model: str = "gpt-4.1-mini",
+        timeout_s: float = 1.5,
+        prompt_spec: LLMPromptSpec | None = None,
+        fallback_judge: DeterministicConflictJudge | None = None,
     ) -> None:
         self.inference_fn = inference_fn
         self.provider = provider
@@ -53,19 +99,18 @@ class LLMConflictJudge:
         candidate_confidence: float,
         candidate_payload: dict,
     ) -> ConflictDecision:
-        previous_confidence = previous.confidence if previous else None # extract previous confidence
-        # build prompt
+        previous_confidence = previous.confidence if previous else None
         prompt = self.prompt_spec.template.format(
             previous_confidence=previous_confidence,
             candidate_confidence=candidate_confidence,
             candidate_payload=candidate_payload,
         )
         prompt_hash = sha256(prompt.encode("utf-8")).hexdigest()
-        started = perf_counter() # time the judge
+        started = perf_counter()
 
         try:
             raw = self._run_with_timeout(prompt)
-            payload = self._parse_response(raw) # validates JSON
+            payload = self._parse_response(raw)
             elapsed_ms = (perf_counter() - started) * 1000.0
             return ConflictDecision(
                 coherence_state=CoherenceState(payload["coherence_state"]),
@@ -77,7 +122,7 @@ class LLMConflictJudge:
                 prompt_hash=prompt_hash,
                 judge_latency_ms=elapsed_ms,
             )
-        except Exception as exc:  # noqa: BLE001 - controlled fallback path.
+        except Exception as exc:
             fallback = self.fallback_judge.judge(
                 previous=previous,
                 candidate_confidence=candidate_confidence,
@@ -93,12 +138,11 @@ class LLMConflictJudge:
             return fallback
 
     def _run_with_timeout(self, prompt: str) -> str:
-        # runs the LLM call in a separate thread so it can raise TimeoutError
         with ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(self.inference_fn, prompt) # cancellation
+            fut = pool.submit(self.inference_fn, prompt)
             try:
                 return fut.result(timeout=self.timeout_s)
-            except TimeoutError as exc: # raises timeout error so downstream logic can recognize it
+            except TimeoutError as exc:
                 fut.cancel()
                 raise TimeoutError("llm_timeout") from exc
 
