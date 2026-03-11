@@ -38,7 +38,6 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
         self.auto_invalidate_on_commit = auto_invalidate_on_commit
         self.deterministic_profile = deterministic_profile
 
-    @staticmethod
     def _resolve_coherence_state(
         self, old_artifact: Artifact | None, confidence: float
     ) -> CoherenceState:
