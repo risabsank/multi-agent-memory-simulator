@@ -422,7 +422,7 @@ class EventualProtocol(ConsistencyProtocol):
                     dst=agent_id,
                     payload={"artifact_id": artifact_id, "reason": "write_commit"},
                 )
-        
+
         simulator.schedule_trigger_syncs_after_commit(
             t=simulator.now,
             writer_id=event.src,
