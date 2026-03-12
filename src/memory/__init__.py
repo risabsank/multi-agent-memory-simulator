@@ -8,7 +8,7 @@ from .model import (
     GlobalMemory,
     Task,
 )
-from .protocols import EventualProtocol, HybridProtocol, WriteThroughStrongProtocol
+from .protocols import EventualProtocol, HybridProtocol, WriteThroughStrongProtocol, MesiProtocol
 from .simulator import RunReport, SimulationResult, Simulator, TraceLine
 
 __all__ = [
@@ -28,5 +28,6 @@ __all__ = [
     "Task",
     "TraceLine",
     "WriteThroughStrongProtocol",
-    "HybridProtocol"
+    "HybridProtocol",
+    "MesiProtocol"
 ]
