@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from llist import dllist
 
 
@@ -124,37 +124,30 @@ class Memory:
         """
 
         def __init__(self):
-            self.lru = dllist()
-            self.node_map = dict()
+            self.lru: OrderedDict[ArtifactId, None] = OrderedDict()
 
         def get_evict_candidate(self) -> ArtifactId:
-            if self.lru.size == 0:
+            if len(self.lru) == 0:
                 raise Exception(
                     "tried to find eviction candidate LRU for global memory is empty. eviction was called before any memory was committed. is total_memory size 0?"
                 )
-            id = self.lru.popleft()
-            del self.node_map[id]
-            return id
+            evict_id, _ = self.lru.popitem(last=False)
+            return evict_id
 
         def add_artifact_id(self, id: ArtifactId) -> None:
-            self.node_map[id] = self.lru.appendright(id)
+            self.lru[id] = None
 
         def remove_artifact_id(self, id: ArtifactId) -> None:
-            self.lru.remove(self.node_map[id])
-            del self.node_map[id]
+            del self.lru[id]
 
         def update_artifact_id(self, id: ArtifactId) -> None:
             """
             Add/Move ArtifactId to end of LRU order
             """
-            if id not in self.node_map:
+            if id not in self.lru:
                 self.add_artifact_id(id)
                 return
-            node = self.node_map[id]
-            self.lru.remove(node)
-            self.node_map[id] = self.lru.appendright(
-                id
-            )  # this works because node.value and id are the same
+            self.lru.move_to_end(id, last=True)
 
     def __post_init__(self):
         self._used_size = 0
@@ -323,7 +316,7 @@ class GlobalMemory(Memory):
         while (
             evicted_size < req_size
         ):  # changed this to use block-aligned required size so swap penalty estimate matches actual eviction need
-            to_evict = self.get_artifact(self._lru.lru[i])
+            to_evict = self.get_artifact(list(self._lru.lru.keys())[i])
             i += 1
             to_evict_size = (
                 Memory.num_blocks(to_evict.size, self.block_size) * self.block_size

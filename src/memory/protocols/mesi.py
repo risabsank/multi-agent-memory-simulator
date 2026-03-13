@@ -59,11 +59,13 @@ class MesiProtocol(WriteThroughStrongProtocol):
         for other_agent_id, other_agent_state in states.items():
             if other_agent_id == host_agent_id:
                 continue
-            elif other_agent_id == STATES.S:
+            elif other_agent_state == STATES.I:
+                invalid.append(other_agent_id)
+            elif other_agent_state == STATES.S:
                 shared.append(other_agent_id)
-            elif other_agent_id == STATES.E:
+            elif other_agent_state == STATES.E:
                 exclusive.append(other_agent_id)
-            elif other_agent_id == STATES.M:
+            elif other_agent_state == STATES.M:
                 modified.append(other_agent_id)
         return invalid, shared, exclusive, modified
 
@@ -258,7 +260,7 @@ class MesiProtocol(WriteThroughStrongProtocol):
                 self.inflight[artifact_id],
                 (t, self.states[artifact_id].copy(), {"id": gen_id}),
             )
-            heappush(self.verification[artifact_id], (t, gen_id))
+            heappush(self.verification.setdefault(artifact_id, []), (t, gen_id))
             return
         # Else, state is I
         # Also same as WriteThroughStrongProtocol
@@ -286,7 +288,7 @@ class MesiProtocol(WriteThroughStrongProtocol):
         gen_id = uuid4()  # For testing purposes
         metadata["id"] = gen_id
         heappush(self.inflight[artifact_id], (t, new_states, metadata))
-        heappush(self.verification[artifact_id], (t, gen_id))
+        heappush(self.verification.setdefault(artifact_id, []), (t, gen_id))
 
         modified = metadata.get(
             "write_back", []
@@ -353,7 +355,6 @@ class MesiProtocol(WriteThroughStrongProtocol):
             # Only do WriteThroughStrongProtocol on_read_resp when the artifact was not able to be snooped, thus requiring a global memory read
             super().on_read_resp(simulator, event)
         elif event.src == "snoop":
-            artifact = simulator.agents[agent.agent_id].cache.get_artifact(artifact_id)
             latency = simulator.now - requested_t
             agent.stats.read_latency_total += latency
             agent.stats.read_count += 1
@@ -376,8 +377,8 @@ class MesiProtocol(WriteThroughStrongProtocol):
                         "version_id": version_id,
                         "latency": latency,
                         "read_source": event.payload.get("read_source", event.src),
-                        "global_version_at_read": artifact.version_id,
-                        "coherence_state": artifact.coherence_state.value,
+                        "global_version_at_read": snooped_artifact.version_id,
+                        "coherence_state": snooped_artifact.coherence_state.value,
                     },
                     # observabiliy and semantic state become queryable per read event
                 )
@@ -458,7 +459,7 @@ class MesiProtocol(WriteThroughStrongProtocol):
                 self.inflight[artifact_id],
                 (t, self.states[artifact_id].copy(), {"id": gen_id}),
             )  # push dud info for behavioral consistency and simplicity
-            heappush(self.verification[artifact_id], (t, gen_id))
+            heappush(self.verification.setdefault(artifact_id, []), (t, gen_id))
         elif state == STATES.I or state == STATES.S:
             new_states, metadata = self.snoop_for_write_miss(simulator, event)
             t += self.bus_latency

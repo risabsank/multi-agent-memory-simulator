@@ -1,3 +1,5 @@
+from dataclasses import asdict
+
 from memory.lib import human2bytes
 from memory.model import Agent, Artifact, ArtifactScope, Cache, GlobalMemory
 from memory.protocols import WriteThroughStrongProtocol
@@ -62,14 +64,11 @@ def main() -> None:
 
     result = sim.run()
     report = sim.build_report()
+    report_metrics = asdict(report)
 
     print(f"Generated ops: {len(ops)}")
-    print(
-        f"conflict_checks={report.conflict_checks} "
-        f"accepted_writes={report.accepted_writes} "
-        f"contested_writes={report.contested_writes}"
-    )
-    print(f"judge_provider_breakdown={report.judge_provider_breakdown}")
+    for metric, value in sorted(report_metrics.items()):
+        print(f"{metric}={value}")
 
     print("\nSample conflict checks:")
     shown = 0
