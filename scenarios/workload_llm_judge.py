@@ -8,41 +8,11 @@ from memory.protocols import WriteThroughStrongProtocol
 from memory.simulator import Simulator
 from memory.workload import BurstyWorkloadConfig, generate_bursty_workload
 
+# import this from your llm.py
+from memory.protocols.judges.llm import build_openai_inference_fn
+
 
 NUM_RE = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
-
-
-def mock_llm_judge(prompt: str) -> str:
-    """Local inference stub that mimics an LLM JSON response.
-
-    This keeps the scenario runnable without external API keys while still exercising
-    the LLM judge path (`judge_mode=\"llm\"`).
-    """
-
-    previous_match = re.search(rf"previous_confidence=({NUM_RE}|None)", prompt)
-    candidate_match = re.search(rf"candidate_confidence=({NUM_RE})", prompt)
-
-    previous = None
-    if previous_match and previous_match.group(1) != "None":
-        previous = float(previous_match.group(1))
-    candidate = float(candidate_match.group(1)) if candidate_match else 0.8
-
-    if previous is None:
-        state = "accepted"
-        reasons = ["llm_new_artifact"]
-    elif candidate - previous < 0.1:
-        state = "contested"
-        reasons = ["llm_low_confidence_delta"]
-    else:
-        state = "accepted"
-        reasons = ["llm_confidence_upgrade"]
-
-    payload = {
-        "coherence_state": state,
-        "reason_codes": reasons,
-        "confidence_delta": None if previous is None else round(candidate - previous, 3),
-    }
-    return json.dumps(payload)
 
 
 def main() -> None:
@@ -80,15 +50,18 @@ def main() -> None:
             )
         )
 
+    # create a real OpenAI-backed inference function
+    llm_inference_fn = build_openai_inference_fn(model="gpt-4.1-mini")
+
     sim = Simulator(
         agents=[Agent(agent_id, Cache(1, 1, human2bytes("1 gb"), 4096)) for agent_id in agent_ids],
         global_memory=global_memory,
         protocol=WriteThroughStrongProtocol(
             judge_mode="llm",
-            llm_inference_fn=mock_llm_judge,
-            llm_provider="local-mock",
-            llm_model="rule-based-judge-v1",
-            llm_timeout_s=0.2,
+            llm_inference_fn=llm_inference_fn,
+            llm_provider="openai",
+            llm_model="gpt-4.1-mini",
+            llm_timeout_s=1.5,
         ),
     )
 
@@ -121,7 +94,9 @@ def main() -> None:
             f"state={line.metadata.get('coherence_state')} "
             f"reason={line.metadata.get('reason_codes')} "
             f"provider={line.metadata.get('judge_provider')} "
-            f"model={line.metadata.get('judge_model')}"
+            f"model={line.metadata.get('judge_model')} "
+            f"fallback={line.metadata.get('fallback_used')} "
+            f"warning={line.metadata.get('warning')}"
         )
         shown += 1
         if shown >= 5:
