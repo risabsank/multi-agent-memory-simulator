@@ -8,8 +8,6 @@ from hashlib import sha256
 from time import perf_counter
 from typing import Callable
 
-from openai import OpenAI
-
 from ...model import Artifact, CoherenceState
 from .deterministic import DeterministicConflictJudge
 from .types import ConflictDecision
@@ -30,6 +28,9 @@ candidate_payload={candidate_payload}
 
 
 def build_openai_inference_fn(model: str = "gpt-4.1-mini") -> Callable[[str], str]:
+
+    from openai import OpenAI
+    
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
     def inference_fn(prompt: str) -> str:
