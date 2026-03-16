@@ -15,6 +15,7 @@ from memory.protocols import (
     MesiProtocol,
     WriteThroughStrongProtocol,
 )
+from memory.protocols.judges.llm import build_openai_inference_fn
 from memory.simulator import RunReport, Simulator
 from memory.workload import BurstyWorkloadConfig, WorkloadOp, generate_bursty_workload
 
@@ -25,6 +26,9 @@ RAW_METRICS_CSV = OUTPUT_ROOT / "evaluation_metrics_raw.csv"
 PLOTTABLE_METRICS_CSV = OUTPUT_ROOT / "evaluation_metrics_plot_ready.csv"
 SUMMARY_METRICS_CSV = OUTPUT_ROOT / "evaluation_metrics_summary.csv"
 RAW_JSON = OUTPUT_ROOT / "evaluation_metrics_raw.json"
+
+LLM_MODEL = "gpt-4.1-mini"
+LLM_TIMEOUT_S = 1.5
 
 
 @dataclass(frozen=True)
@@ -53,39 +57,6 @@ class JudgeConfig:
     deterministic_profile: str
 
 
-def _mock_llm_judge(prompt: str) -> str:
-    previous = None
-    candidate = 0.8
-
-    for part in prompt.split():
-        if part.startswith("previous_confidence="):
-            value = part.split("=", 1)[1]
-            if value != "None":
-                previous = float(value)
-        if part.startswith("candidate_confidence="):
-            candidate = float(part.split("=", 1)[1])
-
-    if previous is None:
-        payload = {
-            "coherence_state": "accepted",
-            "reason_codes": ["llm_new_artifact"],
-            "confidence_delta": None,
-        }
-    elif candidate - previous < 0.1:
-        payload = {
-            "coherence_state": "contested",
-            "reason_codes": ["llm_low_confidence_delta"],
-            "confidence_delta": round(candidate - previous, 3),
-        }
-    else:
-        payload = {
-            "coherence_state": "accepted",
-            "reason_codes": ["llm_confidence_upgrade"],
-            "confidence_delta": round(candidate - previous, 3),
-        }
-    return json.dumps(payload)
-
-
 def _build_protocol(protocol_name: str, judge: JudgeConfig, agents: list[Agent]):
     protocol_map: dict[str, Callable[..., object]] = {
         "strong": WriteThroughStrongProtocol,
@@ -103,15 +74,18 @@ def _build_protocol(protocol_name: str, judge: JudgeConfig, agents: list[Agent])
         "judge_mode": judge.judge_mode,
         "deterministic_profile": judge.deterministic_profile,
     }
+
     if judge.judge_mode == "llm":
+        llm_inference_fn = build_openai_inference_fn(model=LLM_MODEL)
         kwargs.update(
             {
-                "llm_inference_fn": _mock_llm_judge,
-                "llm_provider": "local-mock",
-                "llm_model": "rule-based-judge-v1",
-                "llm_timeout_s": 0.2,
+                "llm_inference_fn": llm_inference_fn,
+                "llm_provider": "openai",
+                "llm_model": LLM_MODEL,
+                "llm_timeout_s": LLM_TIMEOUT_S,
             }
         )
+
     return protocol_map[protocol_name](**kwargs)
 
 
@@ -141,7 +115,12 @@ def _write_workload_file(path: Path, ops: list[WorkloadOp]) -> None:
             )
 
 
-def _setup_simulator(agent_ids: list[str], artifact_ids: list[tuple[str, str]], protocol_name: str, judge: JudgeConfig) -> Simulator:
+def _setup_simulator(
+    agent_ids: list[str],
+    artifact_ids: list[tuple[str, str]],
+    protocol_name: str,
+    judge: JudgeConfig,
+) -> Simulator:
     global_memory = GlobalMemory(
         read_latency=3,
         write_latency=4,
@@ -169,8 +148,6 @@ def _setup_simulator(agent_ids: list[str], artifact_ids: list[tuple[str, str]], 
     )
 
 
-
-
 def _zero_report() -> RunReport:
     return RunReport(
         total_events=0,
@@ -184,7 +161,13 @@ def _zero_report() -> RunReport:
     )
 
 
-def _run_once(ops: list[WorkloadOp], protocol_name: str, judge: JudgeConfig, agent_ids: list[str], artifact_ids: list[tuple[str, str]]) -> tuple[RunReport, str | None]:
+def _run_once(
+    ops: list[WorkloadOp],
+    protocol_name: str,
+    judge: JudgeConfig,
+    agent_ids: list[str],
+    artifact_ids: list[tuple[str, str]],
+) -> tuple[RunReport, str | None]:
     sim = _setup_simulator(agent_ids, artifact_ids, protocol_name, judge)
     for op in ops:
         if op.op == "read":
@@ -293,7 +276,7 @@ def main() -> None:
         JudgeConfig(name="deterministic_strict", judge_mode="deterministic", deterministic_profile="strict"),
         JudgeConfig(name="deterministic_balanced", judge_mode="deterministic", deterministic_profile="balanced"),
         JudgeConfig(name="deterministic_lenient", judge_mode="deterministic", deterministic_profile="permissive"),
-        JudgeConfig(name="llm_local_mock", judge_mode="llm", deterministic_profile="balanced"),
+        JudgeConfig(name="llm_openai", judge_mode="llm", deterministic_profile="balanced"),
     ]
     protocols = ["strong", "eventual", "mesi", "hybrid"]
 
@@ -331,6 +314,16 @@ def main() -> None:
                 for scale in scales:
                     for seed in seeds:
                         ops, agent_ids, artifact_ids = workload_cache[(regime.name, scale.name, seed)]
+                        
+                        print(
+                            f"Running test: "
+                            f"protocol={protocol_name}, "
+                            f"judge={judge.name}, "
+                            f"regime={regime.name}, "
+                            f"scale={scale.name}, "
+                            f"seed={seed}"
+                        )
+                        
                         report, run_error = _run_once(
                             ops=ops,
                             protocol_name=protocol_name,
