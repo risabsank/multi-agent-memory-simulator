@@ -18,6 +18,7 @@ class EventType(str, Enum):
 @dataclass(order=True)
 class Event:
     t: int # scheduled simulation time
+    priority: int # whether to weight internally spawned events to be higher than externally spawned events (set to 0 to prioritize internal over external in the ordering)
     eid: int # unique event id
     type: EventType = field(compare=False)
     src: str = field(compare=False)
@@ -30,9 +31,10 @@ class EventQueue:
         self._heap: list[Event] = []
         self._next_eid = 0
 
-    def push(self, t: int, event_type: EventType, src: str, dst: str, payload: dict | None = None) -> Event:
+    def push(self, t: int, event_type: EventType, src: str, dst: str, payload: dict | None = None, priority: int = 10) -> Event:
         ev = Event(
             t=t,
+            priority=priority,
             eid=self._next_eid,
             type=event_type,
             src=src,
