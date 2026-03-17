@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections import deque
 from heapq import heappush, heappop
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from memory.protocols.base import ConsistencyProtocol
 from memory.protocols.strong import WriteThroughStrongProtocol
@@ -12,13 +11,11 @@ from ..events import Event, EventType
 from ..model import (
     Artifact,
     ArtifactScope,
-    CacheEntry,
     ClaimType,
     CoherenceState,
     Agent,
     ArtifactId,
 )
-from .judges import ConflictJudge, DeterministicConflictJudge, build_conflict_judge
 
 from enum import Enum
 
@@ -50,9 +47,19 @@ class MesiProtocol(WriteThroughStrongProtocol):
         self.bus_latency = bus_latency
         self.states: dict[ArtifactId, dict[str, STATES]] = {}
         self.inflight: dict[
-            ArtifactId, list[tuple[int, dict[str, STATES], dict[str, Any]]]
+            ArtifactId, list[tuple[int, int, dict[str, STATES], dict[str, Any]]]
         ] = {}
-        self.verification: dict[ArtifactId, list[tuple[int, Any]]] = {}
+        self.verification: dict[ArtifactId, list[tuple[int, int, Any]]] = {}
+        self.tiebreaker = 0
+        # TODO: probably won't have time, but this is massive tech debt to get around the issue of all write commit calls requiring all artifact details at time of request instead of time of write
+        # This works for most situations, but for inflight requests in MESI, a request for one artifact can trigger a write back for a different artifact, and inflight requests have not been written back to the caches yet
+        self.artifact_inflight: dict[ArtifactId, list[tuple[int, int, Artifact]]] = {}
+
+    def _add_to_heap(self, artifact_id, t, states, metadata):
+        count = self.tiebreaker  # deal with dict to dict comparisons with heapq
+        heappush(self.inflight[artifact_id], (t, count, states, metadata))
+        heappush(self.verification.setdefault(artifact_id, []), (t, count, metadata))
+        self.tiebreaker += 1
 
     def _process_states(self, host_agent_id: str, states: dict[str, STATES]):
         invalid, shared, exclusive, modified = [], [], [], []
@@ -111,11 +118,20 @@ class MesiProtocol(WriteThroughStrongProtocol):
             metadata["write_back"] = modified
         return new_states, metadata
 
-    def _get_latest_in_inflight(self, artifact_id: ArtifactId):
+    def _get_latest_in_inflight(self, artifact_id: ArtifactId, t=float("inf")):
         queue = self.inflight.setdefault(artifact_id, [])
         latest = None
         for item in queue:
-            if latest is None or latest[0] <= item[0]:
+            if latest is None or (latest[0] <= item[0] and item[0] < t):
+                latest = item
+        assert latest is not None
+        return latest
+
+    def _get_latest_artifact_inflight(self, artifact_id: ArtifactId, t=float("inf")):
+        queue = self.artifact_inflight.setdefault(artifact_id, [])
+        latest = None
+        for item in queue:
+            if latest is None or (latest[0] <= item[0] and item[0] < t):
                 latest = item
         assert latest is not None
         return latest
@@ -130,32 +146,40 @@ class MesiProtocol(WriteThroughStrongProtocol):
         # Ex: A write after another write must be aware of the first write to avoid desynchronizing states
         # TODO: this isn't really important but performance wise, a deque implementation would be more efficient (will turn log and linear time into (mostly) constant)
         inflight_states = (
-            self._get_latest_in_inflight(artifact_id)[1]
+            self._get_latest_in_inflight(artifact_id)[2]
             if len(self.inflight.setdefault(artifact_id, [])) > 0
             else {}
         )
         if len(inflight_states) > 0:
-            new_state = self._process_mesi_load_miss(agent_id, inflight_states)
+            new_state, metadata = self._process_mesi_load_miss(
+                agent_id, inflight_states
+            )
+            metadata["inflight"] = True
         else:
-            new_state = self._process_mesi_load_miss(agent_id, self.states[artifact_id])
-        return new_state
+            new_state, metadata = self._process_mesi_load_miss(
+                agent_id, self.states[artifact_id]
+            )
+        return new_state, metadata
 
     def snoop_for_write_miss(self, simulator, event):
         agent = simulator.agents[event.src]
         artifact_id = tuple(event.payload["artifact_id"])
         agent_id = agent.agent_id
         inflight_states = (
-            self._get_latest_in_inflight(artifact_id)[1]
+            self._get_latest_in_inflight(artifact_id)[2]
             if len(self.inflight.setdefault(artifact_id, [])) > 0
             else {}
         )
         if len(inflight_states) > 0:
-            new_state = self._process_mesi_write_miss(agent_id, inflight_states)
+            new_state, metadata = self._process_mesi_write_miss(
+                agent_id, inflight_states
+            )
+            metadata["inflight"] = True
         else:
-            new_state = self._process_mesi_write_miss(
+            new_state, metadata = self._process_mesi_write_miss(
                 agent_id, self.states[artifact_id]
             )
-        return new_state
+        return new_state, metadata
 
     def process_mesi_update(
         self,
@@ -165,11 +189,11 @@ class MesiProtocol(WriteThroughStrongProtocol):
         target_uuid: Optional[Any] = None,
     ):
         # Commit the MESI update corresponding to the caller
-        t0, states, metadata = heappop(self.inflight[artifact_id])
-        t1, uuid = heappop(self.verification[artifact_id])
+        t0, _, states, metadata = heappop(self.inflight[artifact_id])
+        t1, _, metadata_v = heappop(self.verification[artifact_id])
         if target_uuid:
             assert t0 == t1
-            assert uuid == target_uuid
+            assert metadata_v["gen_id"] == target_uuid
         for agent_id, state in states.items():
             if state == STATES.I:
                 # invalidate
@@ -182,13 +206,24 @@ class MesiProtocol(WriteThroughStrongProtocol):
         # Also does initialization
         return self.states.setdefault(artifact_id, {}).setdefault(agent_id, STATES.I)
 
-    def commit_writes_for_modified_states(self, simulator, event, modified: list[str]):
+    def commit_writes_for_modified_states(
+        self, simulator: Simulator, event, metadata: dict, t: int
+    ):
         # Do a write for every M->S or M->I
         artifact_id = tuple(event.payload["artifact_id"])
         agent = simulator.agents[event.src]
         requested_t = event.payload["requested_t"]
+        modified = metadata.get("write_back", [])
+        inflight = metadata.get("inflight", False)
+        # Either commit a write for the cache or the in flight request
         for other_agent_id in modified:
-            artifact = simulator.agents[other_agent_id].cache.get_artifact(artifact_id)
+            if inflight:
+                # An inflight request needs special handling; we need to commit a write (also t after the commit to cache) *before* the commit to cache
+                artifact = self._get_latest_artifact_inflight(artifact_id, t)[2]
+            else:
+                artifact = simulator.agents[other_agent_id].cache.get_artifact(
+                    artifact_id
+                )
             cache_write_time = simulator.now + agent.cache.store_artifact_latency(
                 artifact
             )
@@ -256,11 +291,8 @@ class MesiProtocol(WriteThroughStrongProtocol):
                 },
             )
             # push something onto the heap for behavioral consistency
-            heappush(
-                self.inflight[artifact_id],
-                (t, self.states[artifact_id].copy(), {"id": gen_id}),
-            )
-            heappush(self.verification.setdefault(artifact_id, []), (t, gen_id))
+            metadata = {"id": gen_id}
+            self._add_to_heap(artifact_id, t, self.states[artifact_id].copy(), metadata)
             return
         # Else, state is I
         # Also same as WriteThroughStrongProtocol
@@ -286,14 +318,13 @@ class MesiProtocol(WriteThroughStrongProtocol):
         )  # E means no other state cached it, so need a global memory read
         # Need to remember to push state change up
         gen_id = uuid4()  # For testing purposes
-        metadata["id"] = gen_id
-        heappush(self.inflight[artifact_id], (t, new_states, metadata))
-        heappush(self.verification.setdefault(artifact_id, []), (t, gen_id))
+        metadata["gen_id"] = gen_id
+        self._add_to_heap(artifact_id, t, new_states, metadata)
 
         modified = metadata.get(
             "write_back", []
         )  # The existence of it, added in _process_mesi_load_miss, implies a write back
-        self.commit_writes_for_modified_states(simulator, event, modified)
+        self.commit_writes_for_modified_states(simulator, event, modified, t)
 
         if snooped_successful is True:
             # Successfully, snooped, so no need to read global memory
@@ -455,21 +486,23 @@ class MesiProtocol(WriteThroughStrongProtocol):
                     "requested_t": requested_t,
                 },
             )
-            heappush(
-                self.inflight[artifact_id],
-                (t, self.states[artifact_id].copy(), {"id": gen_id}),
+            metadata = {"id": gen_id}
+            self._add_to_heap(
+                artifact_id, t, self.states[artifact_id].copy(), metadata
             )  # push dud info for behavioral consistency and simplicity
-            heappush(self.verification.setdefault(artifact_id, []), (t, gen_id))
         elif state == STATES.I or state == STATES.S:
             new_states, metadata = self.snoop_for_write_miss(simulator, event)
+            self.commit_writes_for_modified_states(simulator, event, metadata, t)
+            # Fortunately, for writes, we don't need to consult global memory; all writes are done to local caches
             t += self.bus_latency
             gen_id = uuid4()  # For testing purposes
-            metadata["id"] = gen_id
-            heappush(self.inflight[artifact_id], (t, new_states, metadata))
-            heappush(self.verification.setdefault(artifact_id, []), (t, gen_id))
-            modified = metadata.get("write_back", [])
-            self.commit_writes_for_modified_states(simulator, event, modified)
-            # Fortunately, for writes, we don't need to consult global memory; all writes are done to local caches
+            new_metadata = {"gen_id": gen_id}
+
+            heappush(
+                self.artifact_inflight.setdefault(artifact_id, []),
+                (t, self.tiebreaker, pending_artifact),
+            )
+            self._add_to_heap(artifact_id, t, new_states, new_metadata)
             # Similar to read_req, update LRU
             for snooped_agent_id, state in new_states.items():
                 if state != STATES.I and snooped_agent_id != agent_id:
@@ -499,6 +532,7 @@ class MesiProtocol(WriteThroughStrongProtocol):
         artifact_id = tuple(event.payload["artifact_id"])
         agent = simulator.agents[event.src]
         if event.dst == "cache":
+            test = heappop(self.artifact_inflight[artifact_id])
             self.process_mesi_update(simulator, event, artifact_id)
             artifact = ConsistencyProtocol.create_artifact(simulator, event)
             agent.cache.store_artifact(artifact)
