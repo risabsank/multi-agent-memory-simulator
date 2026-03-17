@@ -131,7 +131,9 @@ class MesiProtocol(WriteThroughStrongProtocol):
 
         return latest
 
-    def _get_latest_artifact_inflight(self, artifact_id: ArtifactId, current_t=float("inf")):
+    def _get_latest_artifact_inflight(
+        self, artifact_id: ArtifactId, current_t=float("inf")
+    ):
         inflight_artifacts = self.artifact_inflight.setdefault(artifact_id, {})
         if not inflight_artifacts:
             return None
@@ -229,12 +231,17 @@ class MesiProtocol(WriteThroughStrongProtocol):
         inflight = metadata.get("inflight", False)
         # Either commit a write for the cache or the in flight request
         for other_agent_id in modified:
+            # a cache hit can result in another agent snooping on inflight requests even though no new artifact needs to be written (aka not in inflight_artifacts)
+            # so fall back if not found as that means the correct data is in the cache
+            artifact = None
             if inflight:
                 # An inflight request needs special handling; we need to commit a write (also t after the commit to cache) *before* the commit to cache
-                latest_inflight = self._get_latest_artifact_inflight(artifact_id)  # TODO: do I pass t here
-                assert latest_inflight is not None
-                artifact = latest_inflight[1]
-            else:
+                latest_inflight = self._get_latest_artifact_inflight(
+                    artifact_id
+                )  # TODO: do I pass t here
+                if latest_inflight is not None:
+                    artifact = latest_inflight[1]
+            if artifact is None:
                 artifact = simulator.agents[other_agent_id].cache.get_artifact(
                     artifact_id
                 )
@@ -434,9 +441,20 @@ class MesiProtocol(WriteThroughStrongProtocol):
             # It is probably unlikely, but still a bug. Assuming large enough cache size (ex: cache can fit some n artifacts), this is unlikely to happen
             # Therefore, carry the artifact through the payload
             snooped_agent_id = event.payload["snoop_from"]
-            snooped_artifact = simulator.agents[snooped_agent_id].cache.get_artifact(
-                artifact_id
-            )
+            # Note: I'm not too certain why, but here, it is possible for a snoop read_resp to come before the write_commit for the snooped agent, meaning it won't be there in the cache to snoop out
+            # I *think* this is because I got rid of some of my priority constructs; putting snoop priorities to 1 level lower in priority in theory should also resolev this, but I'm concerned about the race conditions/inconsistent ordering that may occur then (or still exist)
+            snooped_artifact = None
+            if simulator.agents[snooped_agent_id].cache.artifact_exists(artifact_id):
+                snooped_artifact = simulator.agents[snooped_agent_id].cache.get_artifact(
+                    artifact_id
+                )
+            if snooped_artifact is None:
+                latest_inflight = self._get_latest_artifact_inflight(artifact_id)
+                if latest_inflight is not None:
+                    snooped_artifact = latest_inflight[1]
+            if snooped_artifact is None:
+                # I dont think this should ever really happen, but just in case ig
+                snooped_artifact = simulator.global_memory.get_artifact(artifact_id)
             # Commit the MESI update here (I think doing the MESI state update in req would cause state divergence/drift)
             simulator.agents[agent.agent_id].cache.store_artifact(snooped_artifact)
 
@@ -551,6 +569,10 @@ class MesiProtocol(WriteThroughStrongProtocol):
             new_states = self.states[artifact_id].copy()
             # In MESI, this is the only case when the state changes due to a hit
             new_states[agent_id] = STATES.M
+            self.artifact_inflight.setdefault(artifact_id, {})[gen_id] = (
+                t,
+                pending_artifact,
+            )
             self._add_to_inflight(
                 artifact_id, gen_id, t, new_states, metadata
             )  # push dud info for behavioral consistency and simplicity
@@ -567,7 +589,10 @@ class MesiProtocol(WriteThroughStrongProtocol):
                 gen_id  # similar to above, it should be ok that the rest of the metadata is the same, but need to be careful if this code changes
             )
 
-            self.artifact_inflight.setdefault(artifact_id, {})[gen_id] = (t, pending_artifact)
+            self.artifact_inflight.setdefault(artifact_id, {})[gen_id] = (
+                t,
+                pending_artifact,
+            )
             self._add_to_inflight(artifact_id, gen_id, t, new_states, metadata)
             # Similar to read_req, update LRU
             for snooped_agent_id, state in new_states.items():
