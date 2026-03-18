@@ -38,7 +38,7 @@ def init_scenario1() -> tuple[Simulator, ArtifactId]:
     sim = Simulator(
         agents=agents,
         global_memory=global_memory,
-        protocol=MesiProtocol(bus_latency=1, agents=agents),
+        protocol=MesiProtocol(bus_latency=1),
     )
     return sim, artifact_id0
 

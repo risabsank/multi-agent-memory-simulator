@@ -34,22 +34,22 @@ class MesiProtocol(WriteThroughStrongProtocol):
     2. Check the currently written state
 
     The inflight field basically holds a timeline of all state changes
-    The idea is that every request will consult the timeline if necessary, then heappush a state change onto the timeline
-    Every response will heappop the timeline for the latest (technically earliest) change it needs to make
+    The idea is that every request will consult the timeline if necessary, then ~~heappush~~ push a state change onto the timeline
+    Every response will ~~heappop the timeline~~ pop the corresponding element for the latest (technically earliest) change it needs to make
 
-    Since the simulator runs in order, it should always pop the correct state changes from the timeline
+    ~~Since the simulator runs in order, it should always pop the correct state changes from the timeline~~
+    The ordering correctness is enforced by the push/pop logic
     """
 
-    # TODO: Tech debt here where agents must be passed into protocol as well as simulator
+    # TODO:
     # Another drawback is this MESI implementation is tied to a per-artifact granularity, rather than per block
     # I believe this granularity is correct/ok for inter-agent MESI, but may cause issues if per-block VM simulation is implemented down the line
-    def __init__(self, bus_latency: int, agents: list[Agent]) -> None:
+    def __init__(self, bus_latency: int) -> None:
         self.bus_latency = bus_latency
         self.states: dict[ArtifactId, dict[str, STATES]] = {}
         self.inflight: dict[
             ArtifactId, dict[UUID, tuple[int, dict[str, STATES], dict[str, Any]]]
         ] = {}
-        self.tiebreaker = 0
         # TODO: probably won't have time, but this is massive tech debt to get around the issue of all write commit calls requiring all artifact details at time of request instead of time of write
         # This works for most situations, but for inflight requests in MESI, a request for one artifact can trigger a write back for a different artifact, and inflight requests have not been written back to the caches yet
         self.artifact_inflight: dict[ArtifactId, dict[UUID, tuple[int, Artifact]]] = {}

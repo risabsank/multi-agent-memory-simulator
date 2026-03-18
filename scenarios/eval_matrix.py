@@ -15,6 +15,7 @@ from memory.protocols import (
     MesiProtocol,
     WriteThroughStrongProtocol,
 )
+from memory.protocols.base import ConsistencyProtocol
 from memory.protocols.judges.llm import build_openai_inference_fn
 from memory.simulator import RunReport, Simulator
 from memory.workload import BurstyWorkloadConfig, WorkloadOp, generate_bursty_workload
@@ -57,7 +58,7 @@ class JudgeConfig:
     deterministic_profile: str
 
 
-def _build_protocol(protocol_name: str, judge: JudgeConfig, agents: list[Agent]):
+def _build_protocol(protocol_name: str, judge: JudgeConfig, agents: list[Agent]) -> ConsistencyProtocol:
     protocol_map: dict[str, Callable[..., object]] = {
         "strong": WriteThroughStrongProtocol,
         "eventual": EventualProtocol,
@@ -68,7 +69,7 @@ def _build_protocol(protocol_name: str, judge: JudgeConfig, agents: list[Agent])
         raise ValueError(f"unsupported protocol: {protocol_name}")
 
     if protocol_name == "mesi":
-        return MesiProtocol(bus_latency=1, agents=agents)
+        return MesiProtocol(bus_latency=1)
 
     kwargs = {
         "judge_mode": judge.judge_mode,
@@ -78,7 +79,7 @@ def _build_protocol(protocol_name: str, judge: JudgeConfig, agents: list[Agent])
     if judge.judge_mode == "llm":
         llm_inference_fn = build_openai_inference_fn(model=LLM_MODEL)
         kwargs.update(
-            {
+            {  # type: ignore[reportCallIssue]
                 "llm_inference_fn": llm_inference_fn,
                 "llm_provider": "openai",
                 "llm_model": LLM_MODEL,
@@ -86,7 +87,7 @@ def _build_protocol(protocol_name: str, judge: JudgeConfig, agents: list[Agent])
             }
         )
 
-    return protocol_map[protocol_name](**kwargs)
+    return protocol_map[protocol_name](**kwargs)  # type: ignore[reportReturnType]  pyright is pretty stupid when it comes to funky function/class return handling
 
 
 def _artifact_ids(num_artifacts: int) -> list[tuple[str, str]]:
@@ -139,7 +140,10 @@ def _setup_simulator(
             )
         )
 
-    agents = [Agent(agent_id, Cache(1, 1, human2bytes("1 gb"), 4096)) for agent_id in agent_ids]
+    agents = [
+        Agent(agent_id, Cache(1, 1, human2bytes("1 gb"), 4096))
+        for agent_id in agent_ids
+    ]
 
     return Simulator(
         agents=agents,
@@ -239,7 +243,7 @@ def _aggregate(rows: list[dict[str, object]]) -> list[dict[str, object]]:
             "replicates": len(group),
         }
         for key in numeric_keys:
-            values = [float(g[key]) for g in group if g.get(key) is not None]
+            values = [float(g[key]) for g in group if g.get(key) is not None]  # type: ignore[reportArgumentType]
             row[f"{key}_mean"] = mean(values) if values else 0.0
             row[f"{key}_std"] = pstdev(values) if len(values) > 1 else 0.0
         summary.append(row)
@@ -261,9 +265,33 @@ def main() -> None:
     WORKLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
     regimes = [
-        Regime("low", base_rate_per_tick=0.35, read_probability=0.85, p_enter_burst=0.02, p_exit_burst=0.30, burst_multiplier=4.0, zipf_alpha=1.0),
-        Regime("medium", base_rate_per_tick=0.8, read_probability=0.75, p_enter_burst=0.04, p_exit_burst=0.25, burst_multiplier=6.0, zipf_alpha=1.15),
-        Regime("high", base_rate_per_tick=1.4, read_probability=0.65, p_enter_burst=0.08, p_exit_burst=0.20, burst_multiplier=8.5, zipf_alpha=1.4),
+        Regime(
+            "low",
+            base_rate_per_tick=0.35,
+            read_probability=0.85,
+            p_enter_burst=0.02,
+            p_exit_burst=0.30,
+            burst_multiplier=4.0,
+            zipf_alpha=1.0,
+        ),
+        Regime(
+            "medium",
+            base_rate_per_tick=0.8,
+            read_probability=0.75,
+            p_enter_burst=0.04,
+            p_exit_burst=0.25,
+            burst_multiplier=6.0,
+            zipf_alpha=1.15,
+        ),
+        Regime(
+            "high",
+            base_rate_per_tick=1.4,
+            read_probability=0.65,
+            p_enter_burst=0.08,
+            p_exit_burst=0.20,
+            burst_multiplier=8.5,
+            zipf_alpha=1.4,
+        ),
     ]
     scales = [
         ScalePoint("small", num_agents=3, num_artifacts=4, duration=40),
@@ -273,14 +301,30 @@ def main() -> None:
     seeds = [7, 17, 29]
 
     judges = [
-        JudgeConfig(name="deterministic_strict", judge_mode="deterministic", deterministic_profile="strict"),
-        JudgeConfig(name="deterministic_balanced", judge_mode="deterministic", deterministic_profile="balanced"),
-        JudgeConfig(name="deterministic_lenient", judge_mode="deterministic", deterministic_profile="permissive"),
-        JudgeConfig(name="llm_openai", judge_mode="llm", deterministic_profile="balanced"),
+        JudgeConfig(
+            name="deterministic_strict",
+            judge_mode="deterministic",
+            deterministic_profile="strict",
+        ),
+        JudgeConfig(
+            name="deterministic_balanced",
+            judge_mode="deterministic",
+            deterministic_profile="balanced",
+        ),
+        JudgeConfig(
+            name="deterministic_lenient",
+            judge_mode="deterministic",
+            deterministic_profile="permissive",
+        ),
+        JudgeConfig(
+            name="llm_openai", judge_mode="llm", deterministic_profile="balanced"
+        ),
     ]
     protocols = ["strong", "eventual", "mesi", "hybrid"]
 
-    workload_cache: dict[tuple[str, str, int], tuple[list[WorkloadOp], list[str], list[tuple[str, str]]]] = {}
+    workload_cache: dict[
+        tuple[str, str, int], tuple[list[WorkloadOp], list[str], list[tuple[str, str]]]
+    ] = {}
 
     for regime in regimes:
         for scale in scales:
@@ -303,8 +347,15 @@ def main() -> None:
                     agent_ids=agent_ids,
                     artifact_ids=artifact_ids,
                 )
-                workload_cache[(regime.name, scale.name, seed)] = (ops, agent_ids, artifact_ids)
-                workload_path = WORKLOAD_DIR / f"workload_{regime.name}_{scale.name}_seed{seed}.jsonl"
+                workload_cache[(regime.name, scale.name, seed)] = (
+                    ops,
+                    agent_ids,
+                    artifact_ids,
+                )
+                workload_path = (
+                    WORKLOAD_DIR
+                    / f"workload_{regime.name}_{scale.name}_seed{seed}.jsonl"
+                )
                 _write_workload_file(workload_path, ops)
 
     raw_rows: list[dict[str, object]] = []
@@ -313,8 +364,10 @@ def main() -> None:
             for regime in regimes:
                 for scale in scales:
                     for seed in seeds:
-                        ops, agent_ids, artifact_ids = workload_cache[(regime.name, scale.name, seed)]
-                        
+                        ops, agent_ids, artifact_ids = workload_cache[
+                            (regime.name, scale.name, seed)
+                        ]
+
                         print(
                             f"Running test: "
                             f"protocol={protocol_name}, "
@@ -323,7 +376,7 @@ def main() -> None:
                             f"scale={scale.name}, "
                             f"seed={seed}"
                         )
-                        
+
                         report, run_error = _run_once(
                             ops=ops,
                             protocol_name=protocol_name,
