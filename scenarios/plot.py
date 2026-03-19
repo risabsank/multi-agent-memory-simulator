@@ -97,10 +97,12 @@ def staleness_vs_visibility(workload="high", scale="small"):
         edgecolor="black",
     )
 
-    ax.set_xlabel("Protocol", fontsize=12, fontweight="bold")
-    ax.set_ylabel("Visibility Lag", fontsize=12, color="#D87B22", fontweight="bold")
+    ax.set_xlabel("Protocol", fontsize=12)
+    ax.set_ylabel("Visibility Lag", fontsize=12, color="#D87B22")
     ax2.set_ylabel(
-        "Success Rate (0.0 to 1.0)", fontsize=12, color="#3B6B85", fontweight="bold"
+        "Success Rate (0.0 to 1.0)",
+        fontsize=12,
+        color="#3B6B85",
     )
 
     ax.set_xticks(x)
@@ -109,7 +111,7 @@ def staleness_vs_visibility(workload="high", scale="small"):
     ax.set_ylim(0, 14)
     ax2.set_ylim(0, 1.1)
     plt.title(
-        f"The Penalty of Eventual Consistency\nVisibility Lag vs. Read-Your-Writes Success Rate ({workload} workload, {scale} scale)",
+        f"Penalty of Eventual Consistency\nVisibility Lag vs. Read-Your-Writes Success Rate ({workload} workload, {scale} scale)",
         fontsize=14,
         pad=15,
     )
@@ -134,7 +136,6 @@ def staleness_vs_visibility(workload="high", scale="small"):
             textcoords="offset points",
             ha="center",
             va="bottom",
-            fontweight="bold",
         )
 
     for bar in bars2:
@@ -146,7 +147,6 @@ def staleness_vs_visibility(workload="high", scale="small"):
             textcoords="offset points",
             ha="center",
             va="bottom",
-            fontweight="bold",
         )
 
     plt.tight_layout()
@@ -155,9 +155,21 @@ def staleness_vs_visibility(workload="high", scale="small"):
     plt.show()
 
 
-def plot_llm_diff():
+def plot_llm_diff(workload, protocol):
     df = pd.read_csv("scenarios/generated/evaluation_metrics_summary.csv")
-    filtered_df = df[(df["regime"] == "high") & (df["protocol"] == "strong")]
+
+    target_judges = [
+        "deterministic_lenient",
+        "deterministic_balanced",
+        "deterministic_strict",
+        "llm_openai",
+    ]
+
+    filtered_df = df[
+        (df["regime"] == workload)
+        & (df["protocol"] == protocol)
+        & (df["judge"].isin(target_judges))
+    ]
 
     metrics_to_plot = [
         "avg_judge_latency_mean",
@@ -167,24 +179,23 @@ def plot_llm_diff():
 
     agg_df = filtered_df.groupby("judge")[metrics_to_plot].mean().reset_index()
 
-    agg_df["judge_label"] = agg_df["judge"].apply(
-        lambda x: "LLM Mock"
-        if "llm" in x
-        else x.replace("deterministic_", "").capitalize()
-    )
+    label_mapping = {
+        "deterministic_lenient": ("Lenient", 1),
+        "deterministic_balanced": ("Balanced", 2),
+        "deterministic_strict": ("Strict", 3),
+        "llm_openai": ("LLM (OpenAI)", 4),
+    }
 
-    agg_df["sort_key"] = agg_df["judge_label"].apply(
-        lambda x: 4 if x == "LLM Mock" else 1
+    agg_df["judge_label"] = agg_df["judge"].map(
+        lambda x: label_mapping.get(x, (x, 5))[0]
     )
-    agg_df = agg_df.sort_values(by=["sort_key", "judge_label"]).reset_index(drop=True)
+    agg_df["sort_key"] = agg_df["judge"].map(lambda x: label_mapping.get(x, (x, 5))[1])
+
+    agg_df = agg_df.sort_values(by="sort_key").reset_index(drop=True)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 6))
-    colors = [
-        "#4C72B0",
-        "#55A868",
-        "#C44E52",
-        "#8172B3",
-    ]
+
+    colors = ["#4C72B0", "#55A868", "#C44E52", "#8172B3"][: len(agg_df)]
 
     axes[0].bar(
         agg_df["judge_label"],
@@ -192,9 +203,10 @@ def plot_llm_diff():
         color=colors,
         edgecolor="black",
     )
-    axes[0].set_title("Average Judge Latency", fontsize=12, fontweight="bold")
+    axes[0].set_title("Average Judge Latency", fontsize=12)
     axes[0].set_ylabel("Latency (ms/ticks)", fontsize=11)
     axes[0].tick_params(axis="x", rotation=45)
+    axes[0].set_yscale("symlog", linthresh=0.1)
 
     axes[1].bar(
         agg_df["judge_label"],
@@ -202,9 +214,7 @@ def plot_llm_diff():
         color=colors,
         edgecolor="black",
     )
-    axes[1].set_title(
-        "Fallback Count (Timeouts/Errors)", fontsize=12, fontweight="bold"
-    )
+    axes[1].set_title("Fallback Count (Timeouts/Errors)", fontsize=12)
     axes[1].set_ylabel("Average Fallbacks", fontsize=11)
     axes[1].tick_params(axis="x", rotation=45)
 
@@ -214,23 +224,43 @@ def plot_llm_diff():
         color=colors,
         edgecolor="black",
     )
-    axes[2].set_title("Contested Ratio", fontsize=12, fontweight="bold")
+    axes[2].set_title("Contested Ratio", fontsize=12)
     axes[2].set_ylabel("Ratio (0.0 to 1.0)", fontsize=11)
     axes[2].set_ylim(0, 1.1)
     axes[2].tick_params(axis="x", rotation=45)
 
     for i, v in enumerate(agg_df["contested_ratio_mean"]):
-        axes[2].text(
-            i, v + 0.02, f"{v:.2f}", ha="center", fontweight="bold", fontsize=10
-        )
+        axes[2].text(i, v + 0.02, f"{v:.2f}", ha="center", fontsize=10)
 
     plt.suptitle(
-        "LLM vs. Deterministic Judges under High Load\n(Latency, Reliability, and Contention)",
+        "LLM (OpenAI) vs. Deterministic Judges under High Load\n(Latency, Reliability, and Contention)",
         fontsize=16,
         y=1.05,
     )
     plt.tight_layout()
     plt.show()
+    plt.close()
+
+    print(agg_df["avg_judge_latency_mean"])
+    print(agg_df["fallback_count_mean"])
+
+
+def mesi(workload):
+    df = pd.read_csv("scenarios/generated/evaluation_metrics_summary_mesi.csv")
+
+    filtered_df = df[(df["regime"] == workload)]
+
+    metrics_to_plot = [
+        "total_events_mean",
+        "avg_write_latency_mean",
+        "avg_read_latency_mean",
+    ]
+    agg_df = filtered_df.groupby("protocol")[metrics_to_plot].mean().reset_index()
+    print(filtered_df[filtered_df["protocol"] == "mesi"][metrics_to_plot])
+    # print(filtered_df[["protocol"] + metrics_to_plot])
+
+    fig, axes = plt.subplots(2, 2, figsize=(15, 6))
+    colors = ["#4C72B0", "#55A868", "#C44E52", "#8172B3"][: len(agg_df)]
 
 
 def main():
@@ -238,7 +268,10 @@ def main():
     # contested_ratio("low")
     # staleness_vs_visibility("high", "small")
     # staleness_vs_visibility("high", "large")
-    plot_llm_diff()
+    # plot_llm_diff(workload="low", protocol="strong")
+    # plot_llm_diff(workload="medium", protocol="strong")
+    # plot_llm_diff(workload="high", protocol="strong")
+    mesi(workload="high")
 
 
 if __name__ == "__main__":

@@ -95,7 +95,7 @@ class MesiProtocol(WriteThroughStrongProtocol):
             for other_agent_id in modified:
                 new_states[other_agent_id] = STATES.S
             new_states[host_agent_id] = STATES.S
-            metadata["write_back"] = modified[0]
+            metadata["write_back"] = modified
         else:
             new_states[host_agent_id] = STATES.E
         return new_states, metadata
@@ -280,7 +280,10 @@ class MesiProtocol(WriteThroughStrongProtocol):
         # Note: There is still a race condition caused by the delay it takes to invalidate things on the bus
         # However, I believe this is a flaw inherent in MESI
         # Though I'm not sure if the state change/invalidation should be done after receiving the invalidation request or after updating its cache line, which are separate latencies
-        if state == STATES.E or state == STATES.S or state == STATES.M:
+        if (
+            (state == STATES.E or state == STATES.S or state == STATES.M)
+            and agent.cache.artifact_exists(artifact_id)
+        ):  # ig there is a chance the artifact actually could have been silently evicted *before* the state change was able to propagate
             # Note: Same code as WriteThroughStrongProtocol, could dedup later
             agent.cache.read_artifact(artifact_id)
             entry = agent.cache.get_artifact(artifact_id)
@@ -380,7 +383,11 @@ class MesiProtocol(WriteThroughStrongProtocol):
             if metadata.get("was_exclusive") is not None:
                 snoop_from = metadata["was_exclusive"]
             elif metadata.get("write_back") is not None:
-                snoop_from = metadata["write_back"]
+                snoop_from = (
+                    metadata["write_back"][0]
+                    if isinstance(metadata["write_back"], list)
+                    else metadata["write_back"]
+                )
             else:
                 snoop_from = metadata["sharer"]
             simulator.queue.push(
@@ -445,9 +452,9 @@ class MesiProtocol(WriteThroughStrongProtocol):
             # I *think* this is because I got rid of some of my priority constructs; putting snoop priorities to 1 level lower in priority in theory should also resolev this, but I'm concerned about the race conditions/inconsistent ordering that may occur then (or still exist)
             snooped_artifact = None
             if simulator.agents[snooped_agent_id].cache.artifact_exists(artifact_id):
-                snooped_artifact = simulator.agents[snooped_agent_id].cache.get_artifact(
-                    artifact_id
-                )
+                snooped_artifact = simulator.agents[
+                    snooped_agent_id
+                ].cache.get_artifact(artifact_id)
             if snooped_artifact is None:
                 latest_inflight = self._get_latest_artifact_inflight(artifact_id)
                 if latest_inflight is not None:

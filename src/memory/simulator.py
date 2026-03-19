@@ -75,6 +75,7 @@ class RunReport:
     p95_stale_version_gap: float = 0.0
     max_stale_version_gap: int = 0
 
+
 class Simulator:
     """Minimal discrete-event simulator vertical slice.
 
@@ -286,7 +287,6 @@ class Simulator:
             if t.event == EventType.EV_CONFLICT_CHECK.value
         ]
 
-
         cache_total = cache_hits + cache_misses
         cache_hit_rate = cache_hits / cache_total if cache_total else 0.0
 
@@ -300,7 +300,8 @@ class Simulator:
             and isinstance(t.metadata.get("latency"), (int, float))
         ]
         avg_visibility_lag = (
-            sum(float(t.metadata["latency"]) for t in write_commits) / len(write_commits)
+            sum(float(t.metadata["latency"]) for t in write_commits)
+            / len(write_commits)
             if write_commits
             else 0.0
         )
@@ -313,7 +314,8 @@ class Simulator:
             for t in read_events
             if isinstance(t.metadata.get("version_id"), int)
             and isinstance(t.metadata.get("global_version_at_read"), int)
-            and int(t.metadata["version_id"]) < int(t.metadata["global_version_at_read"])
+            and int(t.metadata["version_id"])
+            < int(t.metadata["global_version_at_read"])
         )
         stale_read_rate = stale_reads / len(read_events) if read_events else 0.0
 
@@ -322,7 +324,8 @@ class Simulator:
             for t in read_events
             if isinstance(t.metadata.get("version_id"), int)
             and isinstance(t.metadata.get("global_version_at_read"), int)
-            and int(t.metadata["version_id"]) < int(t.metadata["global_version_at_read"])
+            and int(t.metadata["version_id"])
+            < int(t.metadata["global_version_at_read"])
         ]
         avg_stale_version_gap = (
             sum(stale_version_gaps) / len(stale_version_gaps)

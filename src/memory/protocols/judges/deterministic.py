@@ -13,6 +13,7 @@ class DeterministicConflictJudge:
         "permissive": -0.05,
         "balanced": 0.0,
         "strict": 0.05,
+        "latest": float("-inf"),
     }
 
     def __init__(self, profile: str = "balanced") -> None:
