@@ -319,13 +319,13 @@ def mesi(workload, scale):
                     textcoords="offset points",
                     ha="center",
                     va="bottom",
-                    fontsize=7,
+                    fontsize=8,
                 )
     plt.suptitle(
         f"Protocol Performance Comparison (Workload: {workload.title()}, Scale: {scale.title()})",
         fontsize=14,
     )
-    plt.subplots_adjust(top=0.85, bottom=0.25)
+    fig.tight_layout()
     plt.show()
     fig.savefig(f"mesi_comparison_{workload}_workload_{scale}_scale.png")
     plt.close()
