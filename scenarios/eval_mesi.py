@@ -206,13 +206,14 @@ def _flatten_for_csv(base: dict[str, object], report: RunReport) -> dict[str, ob
 
 
 def _aggregate(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    by_group: dict[tuple[str, str, str, str], list[dict[str, object]]] = {}
+    by_group: dict[tuple[str, str, str, str, str], list[dict[str, object]]] = {}
     for row in rows:
         key = (
             str(row["protocol"]),
             str(row["judge"]),
             str(row["regime"]),
             str(row["scale"]),
+            str(row["bus_latency"]),
         )
         by_group.setdefault(key, []).append(row)
 
@@ -238,12 +239,15 @@ def _aggregate(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     ]
 
     summary: list[dict[str, object]] = []
-    for (protocol, judge, regime, scale), group in sorted(by_group.items()):
+    for (protocol, judge, regime, scale, bus_latency), group in sorted(
+        by_group.items()
+    ):
         row: dict[str, object] = {
             "protocol": protocol,
             "judge": judge,
             "regime": regime,
             "scale": scale,
+            "bus_latency": bus_latency,
             "replicates": len(group),
         }
         for key in numeric_keys:
@@ -311,8 +315,8 @@ def main() -> None:
             deterministic_profile="latest",
         ),
     ]
-    # protocols = ["strong", "eventual", "mesi", "hybrid"]
-    protocols = ["mesi"]
+    protocols = ["strong", "eventual", "mesi", "hybrid"]
+    # protocols = ["mesi"]
     bus_latencies = [1, 2, 4]
 
     workload_cache: dict[

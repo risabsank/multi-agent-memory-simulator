@@ -633,6 +633,21 @@ class MesiProtocol(WriteThroughStrongProtocol):
                 },
                 priority=0,
             )
+            simulator.trace.append(
+                simulator.trace_line_type(
+                    simulator.now,
+                    EventType.EV_WRITE_REQ.value,
+                    f"{agent.agent_id} wrote {artifact_id} v{new_version} (Write Miss/Upgrade)",
+                    metadata={
+                        "agent": agent.agent_id,
+                        "artifact_id": artifact_id,
+                        "version_id": new_version,
+                        "coherence_state": coherence_state.value,
+                        "confidence": confidence,
+                        "state": state,
+                    },
+                )
+            )
 
     def on_write_commit(self, simulator: Simulator, event: Event) -> None:
         artifact_id = tuple(event.payload["artifact_id"])
@@ -652,7 +667,6 @@ class MesiProtocol(WriteThroughStrongProtocol):
             )
             artifact = ConsistencyProtocol.create_artifact(simulator, event)
             agent.cache.store_artifact(artifact)
-            # TODO: add trace log statement
             simulator.trace.append(
                 simulator.trace_line_type(
                     simulator.now,

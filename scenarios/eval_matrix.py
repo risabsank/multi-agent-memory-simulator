@@ -58,7 +58,9 @@ class JudgeConfig:
     deterministic_profile: str
 
 
-def _build_protocol(protocol_name: str, judge: JudgeConfig, agents: list[Agent]) -> ConsistencyProtocol:
+def _build_protocol(
+    protocol_name: str, judge: JudgeConfig, agents: list[Agent]
+) -> ConsistencyProtocol:
     protocol_map: dict[str, Callable[..., object]] = {
         "strong": WriteThroughStrongProtocol,
         "eventual": EventualProtocol,

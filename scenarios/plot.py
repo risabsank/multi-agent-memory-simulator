@@ -24,7 +24,6 @@ def contested_ratio(workload: str):
     order = ["small", "medium", "large"]
     mean_pivot = mean_pivot.reindex(order)
     std_pivot = std_pivot.reindex(order)
-    plt.style.use("seaborn-v0_8-darkgrid")
     mean_pivot.plot(
         kind="bar",
         yerr=std_pivot,
@@ -39,6 +38,7 @@ def contested_ratio(workload: str):
         fontsize=14,
         pad=15,
     )
+    plt.grid(axis="y", linestyle="--", alpha=0.7)
     plt.ylabel("Contested Ratio (Mean)", fontsize=12)
     plt.xlabel("Scale (Cluster Size)", fontsize=12)
     plt.xticks(rotation=0, fontsize=11)
@@ -149,10 +149,29 @@ def staleness_vs_visibility(workload="high", scale="small"):
             va="bottom",
         )
 
+    ax.grid(axis="y", linestyle="--", alpha=0.7)
     plt.tight_layout()
     plt.subplots_adjust(top=0.85)
     fig.savefig(f"staleness_vs_visibility_lag_{workload}_workload_{scale}_scale.png")
     plt.show()
+
+
+def separate_summary_csv():
+    df = pd.read_csv("scenarios/generated/evaluation_metrics_summary.csv")
+    llm_df = df[df["judge"] == "llm_openai"]
+    remaining_df = df[df["judge"] != "llm_openai"]
+
+    llm_df.to_csv("scenarios/generated/evaluation_metrics_summary_llm_only.csv")
+    remaining_df.to_csv(
+        "scenarios/generated/evaluation_metrics_summary_no_llm_only.csv"
+    )
+
+
+def merge_summary_csv():
+    llm_df = pd.read_csv("scenarios/generated/evaluation_metrics_summary_llm_only.csv")
+    df = pd.read_csv("scenarios/generated/evaluation_metrics_summary.csv")
+    merged_df = pd.concat([df, llm_df], ignore_index=True)
+    merged_df.to_csv("scenarios/generated/evaluation_metrics_summary.csv")
 
 
 def plot_llm_diff(workload, protocol):
@@ -207,6 +226,7 @@ def plot_llm_diff(workload, protocol):
     axes[0].set_ylabel("Latency (ms/ticks)", fontsize=11)
     axes[0].tick_params(axis="x", rotation=45)
     axes[0].set_yscale("symlog", linthresh=0.1)
+    axes[0].grid(axis="y", linestyle="--", alpha=0.7)
 
     axes[1].bar(
         agg_df["judge_label"],
@@ -217,6 +237,7 @@ def plot_llm_diff(workload, protocol):
     axes[1].set_title("Fallback Count (Timeouts/Errors)", fontsize=12)
     axes[1].set_ylabel("Average Fallbacks", fontsize=11)
     axes[1].tick_params(axis="x", rotation=45)
+    axes[1].grid(axis="y", linestyle="--", alpha=0.7)
 
     axes[2].bar(
         agg_df["judge_label"],
@@ -228,6 +249,7 @@ def plot_llm_diff(workload, protocol):
     axes[2].set_ylabel("Ratio (0.0 to 1.0)", fontsize=11)
     axes[2].set_ylim(0, 1.1)
     axes[2].tick_params(axis="x", rotation=45)
+    axes[2].grid(axis="y", linestyle="--", alpha=0.7)
 
     for i, v in enumerate(agg_df["contested_ratio_mean"]):
         axes[2].text(i, v + 0.02, f"{v:.2f}", ha="center", fontsize=10)
@@ -245,33 +267,84 @@ def plot_llm_diff(workload, protocol):
     print(agg_df["fallback_count_mean"])
 
 
-def mesi(workload):
+def mesi(workload, scale):
     df = pd.read_csv("scenarios/generated/evaluation_metrics_summary_mesi.csv")
 
-    filtered_df = df[(df["regime"] == workload)]
+    bus_latencies = df["bus_latency"].unique()
+
+    base_protocols = ["strong", "hybrid", "eventual"]
+    filtered_df = df[(df["regime"] == workload) & (df["scale"] == scale)].copy()
+
+    def format_protocol_name(row):
+        if row["protocol"] == "mesi":
+            return f"mesi (bus={int(row['bus_latency'])})"
+        return row["protocol"]
+
+    filtered_df["display_protocol"] = filtered_df.apply(format_protocol_name, axis=1)
 
     metrics_to_plot = [
         "total_events_mean",
         "avg_write_latency_mean",
         "avg_read_latency_mean",
     ]
-    agg_df = filtered_df.groupby("protocol")[metrics_to_plot].mean().reset_index()
-    print(filtered_df[filtered_df["protocol"] == "mesi"][metrics_to_plot])
-    # print(filtered_df[["protocol"] + metrics_to_plot])
+    grouped_df = filtered_df.groupby("display_protocol")[metrics_to_plot].mean()
+    protocol_order = ["strong", "hybrid", "eventual", "mesi (bus=1)", "mesi (bus=4)"]
+    grouped_df = grouped_df.reindex(protocol_order)
 
-    fig, axes = plt.subplots(2, 2, figsize=(15, 6))
-    colors = ["#4C72B0", "#55A868", "#C44E52", "#8172B3"][: len(agg_df)]
+    fig, axes = plt.subplots(1, 3, figsize=(15, 9))
+    colors = ["#4C72B0", "#55A868", "#C44E52", "#8172B3"]
+    titles = ["Total Events", "Avg Write Latency", "Avg Read Latency"]
+    for idx, metric in enumerate(metrics_to_plot):
+        bars = axes[idx].bar(
+            grouped_df.index,
+            grouped_df[metric],
+            color=colors,
+            edgecolor="black",
+            alpha=0.8,
+        )
+
+        axes[idx].set_title(titles[idx], fontsize=14, pad=10)
+        axes[idx].set_xlabel("Consistency Protocol", fontsize=12)
+        axes[idx].set_ylabel("Mean Value", fontsize=12)
+        axes[idx].tick_params(axis="x", rotation=30)
+        axes[idx].grid(axis="y", linestyle="--", alpha=0.7)
+
+        for bar in bars:
+            height = bar.get_height()
+            if pd.notnull(height):
+                axes[idx].annotate(
+                    f"{height:.2f}",
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3),
+                    textcoords="offset points",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                )
+    plt.suptitle(
+        f"Protocol Performance Comparison (Workload: {workload.title()}, Scale: {scale.title()})",
+        fontsize=14,
+    )
+    plt.subplots_adjust(top=0.85, bottom=0.25)
+    plt.show()
+    fig.savefig(f"mesi_comparison_{workload}_workload_{scale}_scale.png")
+    plt.close()
 
 
 def main():
-    # contested_ratio("high")
-    # contested_ratio("low")
-    # staleness_vs_visibility("high", "small")
-    # staleness_vs_visibility("high", "large")
+    contested_ratio("high")
+    contested_ratio("low")
+    staleness_vs_visibility("high", "small")
+    staleness_vs_visibility("high", "large")
     # plot_llm_diff(workload="low", protocol="strong")
     # plot_llm_diff(workload="medium", protocol="strong")
     # plot_llm_diff(workload="high", protocol="strong")
-    mesi(workload="high")
+    mesi(workload="high", scale="large")
+    mesi(workload="high", scale="small")
+    mesi(workload="low", scale="large")
+    mesi(workload="low", scale="small")
+    # separate_summary_csv()
+    # merge_summary_csv()
 
 
 if __name__ == "__main__":

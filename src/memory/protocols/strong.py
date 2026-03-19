@@ -270,16 +270,30 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
     def on_write_commit(self, simulator: Simulator, event: Event) -> None:
         artifact_id = tuple(event.payload["artifact_id"])
         agent = simulator.agents[event.src]
+        latency = simulator.now - int(event.payload["requested_t"])
         if event.dst == "cache":
             artifact = ConsistencyProtocol.create_artifact(simulator, event)
             agent.cache.store_artifact(artifact)
-            # TODO: add trace log statement
+            simulator.trace.append(
+                simulator.trace_line_type(
+                    simulator.now,
+                    EventType.EV_WRITE_COMMIT.value,
+                    f"cache committed {artifact_id} v{artifact.version_id} for agent {agent.agent_id}",
+                    metadata={
+                        "artifact_id": artifact_id,
+                        "version_id": artifact.version_id,
+                        "coherence_state": artifact.coherence_state.value,
+                        "confidence": artifact.confidence,
+                        "provenance": artifact.provenance,
+                        "latency": latency,
+                    },
+                )
+            )
             return
 
         artifact = ConsistencyProtocol.create_artifact(simulator, event)
         simulator.global_memory.store_artifact(artifact)
 
-        latency = simulator.now - int(event.payload["requested_t"])
         writer = simulator.agents[event.src]
         writer.stats.write_latency_total += latency
         writer.stats.write_count += 1
