@@ -2,7 +2,7 @@
 
 This repository contains a minimal version of a cache-coherent multi-agent memory simulator.
 
-Implemented today:
+Implemented:
 - Discrete-event simulator
 - One cache level per agent
 - One protocol behavior: write-through to global memory
@@ -12,12 +12,12 @@ Implemented today:
   - `EV_READ_RESP`
   - `EV_WRITE_REQ`
   - `EV_WRITE_COMMIT`
+- eventual and task-scoped consistency variants
 
 Deferred:
 - `SUMMARIZE`
 - `SYNC`
 - invalidation/reconciliation events
-- eventual and task-scoped consistency variants
 - multi-level cache policies
 
 ## Run
