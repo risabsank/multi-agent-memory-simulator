@@ -44,8 +44,8 @@ class MesiProtocol(WriteThroughStrongProtocol):
     # TODO:
     # Another drawback is this MESI implementation is tied to a per-artifact granularity, rather than per block
     # I believe this granularity is correct/ok for inter-agent MESI, but may cause issues if per-block VM simulation is implemented down the line
-    def __init__(self, bus_latency: int) -> None:
-        self.bus_latency = bus_latency
+    def __init__(self, bus_latency: int, *, per_block_mode: bool = False) -> None:
+        self.per_block_mode = per_block_mode
         self.states: dict[ArtifactId, dict[str, STATES]] = {}
         self.inflight: dict[
             ArtifactId, dict[UUID, tuple[int, dict[str, STATES], dict[str, Any]]]
@@ -53,6 +53,13 @@ class MesiProtocol(WriteThroughStrongProtocol):
         # TODO: probably won't have time, but this is massive tech debt to get around the issue of all write commit calls requiring all artifact details at time of request instead of time of write
         # This works for most situations, but for inflight requests in MESI, a request for one artifact can trigger a write back for a different artifact, and inflight requests have not been written back to the caches yet
         self.artifact_inflight: dict[ArtifactId, dict[UUID, tuple[int, Artifact]]] = {}
+    
+    def _resolve_granule_id(self, event: Event) -> ArtifactId:
+        artifact_id = tuple(event.payload["artifact_id"])
+        if not self.per_block_mode:
+            return artifact_id
+        block_id = int(event.payload.get("block_id", 0))
+        return (artifact_id[0], f"{artifact_id[1]}#b{block_id}")
 
     def _add_to_inflight(self, artifact_id, gen_id, t, states, metadata):
         self.inflight.setdefault(artifact_id, {})[gen_id] = (t, states, metadata)
@@ -147,7 +154,7 @@ class MesiProtocol(WriteThroughStrongProtocol):
         self, simulator, event
     ) -> tuple[int | None, dict[str, STATES], dict[str, Any]]:
         agent = simulator.agents[event.src]
-        artifact_id = tuple(event.payload["artifact_id"])
+        artifact_id = self._resolve_granule_id(event)
         agent_id = agent.agent_id
         # Must check inflight requests according to the MESI protocol
         # Ex: A write after another write must be aware of the first write to avoid desynchronizing states
@@ -173,7 +180,7 @@ class MesiProtocol(WriteThroughStrongProtocol):
 
     def snoop_for_write_miss(self, simulator, event):
         agent = simulator.agents[event.src]
-        artifact_id = tuple(event.payload["artifact_id"])
+        artifact_id = self._resolve_granule_id(event)
         agent_id = agent.agent_id
         inflight = (
             self._get_latest_in_inflight(artifact_id)
@@ -224,7 +231,7 @@ class MesiProtocol(WriteThroughStrongProtocol):
         self, simulator: Simulator, event, metadata: dict, t: int
     ):
         # Do a write for every M->S or M->I
-        artifact_id = tuple(event.payload["artifact_id"])
+        artifact_id = self._resolve_granule_id(event)
         agent = simulator.agents[event.src]
         requested_t = event.payload["requested_t"]
         modified = metadata.get("write_back", [])
@@ -271,7 +278,7 @@ class MesiProtocol(WriteThroughStrongProtocol):
 
     def on_read_req(self, simulator: Simulator, event: Event) -> None:
         agent = simulator.agents[event.src]
-        artifact_id = tuple(event.payload["artifact_id"])
+        artifact_id = self._resolve_granule_id(event)
         requested_t = event.payload["requested_t"]
         agent_id = agent.agent_id
         t = simulator.now + agent.cache.read_artifact_latency(artifact_id)
@@ -706,6 +713,10 @@ class MesiProtocol(WriteThroughStrongProtocol):
                 )
             )
 
-    def on_sync_req(self, simulator: Simulator, event: Event) -> None: ...
+    def on_sync_req(self, simulator: Simulator, event: Event) -> None:
+        # MESI currently uses explicit snooping for coherence, but still supports manual
+        # sync/conflict-check for simulator feature-parity and benchmark matrix runs.
+        super().on_sync_req(simulator, event)
 
-    def on_invalidate_req(self, simulator: Simulator, event: Event) -> None: ...
+    def on_invalidate_req(self, simulator: Simulator, event: Event) -> None:
+        super().on_invalidate_req(simulator, event)

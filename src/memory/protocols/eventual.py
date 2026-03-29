@@ -6,6 +6,7 @@ from memory.protocols.base import ConsistencyProtocol
 
 from ..events import Event, EventType
 from ..model import Artifact, ArtifactScope, CacheEntry, ClaimType, CoherenceState
+from ..semantic import SemanticCoherenceEngine
 from .judges import ConflictJudge, DeterministicConflictJudge, build_conflict_judge
 
 if TYPE_CHECKING:
@@ -43,6 +44,7 @@ class EventualProtocol(ConsistencyProtocol):
             llm_model=llm_model,
             llm_timeout_s=llm_timeout_s,
         )
+        self.semantic_engine = SemanticCoherenceEngine()
 
     def _resolve_commit_state(
         self, old_artifact: Artifact | None, confidence: float
@@ -402,6 +404,12 @@ class EventualProtocol(ConsistencyProtocol):
             candidate_confidence=confidence,
             candidate_payload=event.payload,
         )
+        semantic_decision = self.semantic_engine.decide_write_state(
+            previous=previous,
+            candidate_confidence=confidence,
+            candidate_payload=event.payload,
+            default_state=decision.coherence_state,
+        )
 
         simulator.trace.append(
             simulator.trace_line_type(
@@ -413,6 +421,7 @@ class EventualProtocol(ConsistencyProtocol):
                     "new_version": event.payload["version_id"],
                     "old_version": event.payload["old_version"],
                     **decision.to_metadata(),
+                    "state_transition_reason_codes": list(semantic_decision.reason_codes),
                     "confidence": confidence,
                     "delayed_propagation": True,
                 },
@@ -435,7 +444,7 @@ class EventualProtocol(ConsistencyProtocol):
                 "claim_type": event.payload["claim_type"],
                 "provenance": event.payload["provenance"],
                 "confidence": confidence,
-                "coherence_state": decision.coherence_state,
+                "coherence_state": semantic_decision.state,
                 "observed_at": event.payload["observed_at"],
                 "valid_at": event.payload["valid_at"],
                 "requested_t": event.payload["requested_t"],
@@ -514,7 +523,13 @@ class EventualProtocol(ConsistencyProtocol):
                     dst=agent_id,
                     payload={"artifact_id": artifact_id, "reason": "write_commit"},
                 )
-
+        simulator.schedule_dependency_invalidations(
+            t=simulator.now,
+            writer_id=event.src,
+            artifact_id=artifact_id,
+            reason="dependency_cascade",
+        )
+        
         simulator.schedule_trigger_syncs_after_commit(
             t=simulator.now,
             writer_id=event.src,

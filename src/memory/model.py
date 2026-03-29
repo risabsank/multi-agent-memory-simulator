@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from collections import defaultdict, OrderedDict
-from llist import dllist
 
 
 # defines the semantic visibility of an artifact

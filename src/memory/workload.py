@@ -8,7 +8,7 @@ from typing import Literal
 from .model import ArtifactId
 
 OperationType = Literal["read", "write"]
-
+WorkloadTemplate = Literal["synthetic_bursty", "incident_triage", "debug_loop", "planning_cycle"]
 
 @dataclass(frozen=True)
 class WorkloadOp:
@@ -117,6 +117,82 @@ def generate_bursty_workload(
                     size=config.write_size_bytes if op_type == "write" else None,
                 )
             )
+
+    ops.sort(key=lambda op: (op.t, op.agent_id, op.artifact_id, op.op))
+    return ops
+
+def generate_template_workload(
+    *,
+    template: WorkloadTemplate,
+    duration: int,
+    seed: int,
+    agent_ids: list[str],
+    artifact_ids: list[ArtifactId],
+) -> list[WorkloadOp]:
+    """Domain-oriented workloads beyond synthetic bursty traffic."""
+    if template == "synthetic_bursty":
+        return generate_bursty_workload(
+            config=BurstyWorkloadConfig(duration=duration, seed=seed),
+            agent_ids=agent_ids,
+            artifact_ids=artifact_ids,
+        )
+
+    rng = random.Random(seed)
+    ops: list[WorkloadOp] = []
+    if template == "incident_triage":
+        # Heavy reads first, then corrective writes after detection windows.
+        for t in range(duration):
+            for _ in range(2 if t % 5 else 4):
+                ops.append(
+                    WorkloadOp(
+                        t=t,
+                        agent_id=agent_ids[rng.randrange(len(agent_ids))],
+                        artifact_id=artifact_ids[rng.randrange(len(artifact_ids))],
+                        op="read",
+                    )
+                )
+            if t % 7 == 0:
+                ops.append(
+                    WorkloadOp(
+                        t=t,
+                        agent_id=agent_ids[rng.randrange(len(agent_ids))],
+                        artifact_id=artifact_ids[rng.randrange(len(artifact_ids))],
+                        op="write",
+                        size=1024,
+                    )
+                )
+    elif template == "debug_loop":
+        # Frequent write-read cycles on a hot subset.
+        hot = artifact_ids[: max(1, len(artifact_ids) // 3)]
+        for t in range(duration):
+            art = hot[rng.randrange(len(hot))]
+            aid = agent_ids[rng.randrange(len(agent_ids))]
+            ops.append(WorkloadOp(t=t, agent_id=aid, artifact_id=art, op="write", size=768))
+            ops.append(WorkloadOp(t=t, agent_id=aid, artifact_id=art, op="read"))
+    elif template == "planning_cycle":
+        # Broad fan-out reads, periodic summary-style writes.
+        for t in range(duration):
+            for agent_id in agent_ids:
+                ops.append(
+                    WorkloadOp(
+                        t=t,
+                        agent_id=agent_id,
+                        artifact_id=artifact_ids[(t + len(agent_id)) % len(artifact_ids)],
+                        op="read",
+                    )
+                )
+            if t % 6 == 0:
+                ops.append(
+                    WorkloadOp(
+                        t=t,
+                        agent_id=agent_ids[t % len(agent_ids)],
+                        artifact_id=artifact_ids[t % len(artifact_ids)],
+                        op="write",
+                        size=1536,
+                    )
+                )
+    else:
+        raise ValueError(f"unsupported template: {template}")
 
     ops.sort(key=lambda op: (op.t, op.agent_id, op.artifact_id, op.op))
     return ops

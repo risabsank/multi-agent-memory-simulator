@@ -7,6 +7,7 @@ from typing import Any, Iterable, Literal
 from .events import Event, EventQueue, EventType
 from .model import Agent, ArtifactId, GlobalMemory, VersionClock
 from .protocols import ConsistencyProtocol, WriteThroughStrongProtocol
+from .dependency import DependencyGraph
 
 
 # structured execution log entry for each simulation step
@@ -93,8 +94,11 @@ class Simulator:
         global_memory: GlobalMemory,
         protocol: ConsistencyProtocol | None = None,
         *,
-        sync_policy: Literal["none", "periodic", "trigger-based"] = "none",
+        sync_policy: Literal["none", "manual", "periodic", "trigger-based"] = "none",
         sync_interval: int = 10,
+        invalidate_policy: Literal["none", "manual", "trigger-based", "periodic"] = "manual",
+        task_scope_filter: str | None = None,
+        dependency_graph: DependencyGraph | None = None,
     ) -> None:
         self.agents = {a.agent_id: a for a in agents}  # agents indexed
         self.global_memory = global_memory  #
@@ -103,9 +107,14 @@ class Simulator:
         self.clock = VersionClock()
         self.sync_policy = sync_policy
         self.sync_interval = sync_interval
+        self.invalidate_policy = invalidate_policy
+        self.task_scope_filter = task_scope_filter
+        self.dependency_graph = dependency_graph or DependencyGraph()
         self._max_user_scheduled_t = 0
         self._known_artifact_ids: set[ArtifactId] = set()
 
+        if self.sync_policy == "manual":
+            self.sync_policy = "none"
         if self.sync_policy not in {"none", "periodic", "trigger-based"}:
             raise ValueError(
                 f"Unsupported sync policy '{self.sync_policy}'. Expected one of: none, periodic, trigger-based."
@@ -117,6 +126,7 @@ class Simulator:
         self.trace: list[TraceLine] = []
 
     def schedule_read(self, t: int, agent_id: str, artifact_id: ArtifactId) -> None:
+        
         self._max_user_scheduled_t = max(self._max_user_scheduled_t, t)
         self._known_artifact_ids.add(artifact_id)
         self.queue.push(
@@ -168,6 +178,8 @@ class Simulator:
         )
 
     def schedule_sync(self, t: int, agent_id: str, artifact_id: ArtifactId) -> None:
+        if not self._artifact_in_scope(artifact_id):
+            return
         self._max_user_scheduled_t = max(self._max_user_scheduled_t, t)
         self._known_artifact_ids.add(artifact_id)
         self.queue.push(
@@ -181,6 +193,8 @@ class Simulator:
     def schedule_invalidate(
         self, t: int, agent_id: str, artifact_id: ArtifactId, reason: str = "manual"
     ) -> None:
+        if not self._artifact_in_scope(artifact_id):
+            return
         self._max_user_scheduled_t = max(self._max_user_scheduled_t, t)
         self._known_artifact_ids.add(artifact_id)
         self.queue.push(
@@ -196,6 +210,7 @@ class Simulator:
         Run some bookkeeping/initialization code prior to run() but after __init__()
         """
         for artifact_id, artifact in self.global_memory.get_all_artifacts():
+            
             self.clock._versions[artifact_id] = artifact.version_id
             self._known_artifact_ids.add(artifact_id)
 
@@ -214,6 +229,8 @@ class Simulator:
         for t in range(self.sync_interval, horizon + 1, self.sync_interval):
             for agent_id in self.agents:
                 for artifact_id in self._known_artifact_ids:
+                    if not self._artifact_in_scope(artifact_id):
+                        continue
                     self.queue.push(
                         t=t,
                         event_type=EventType.EV_SYNC_REQ,
@@ -226,6 +243,8 @@ class Simulator:
         self, *, t: int, writer_id: str, artifact_id: ArtifactId
     ) -> None:
         if self.sync_policy != "trigger-based":
+            return
+        if not self._artifact_in_scope(artifact_id):
             return
         for agent_id in self.agents:
             if agent_id == writer_id:
@@ -241,6 +260,35 @@ class Simulator:
                     "reason": "triggered_by_global_commit",
                 },
             )
+    
+    def schedule_dependency_invalidations(
+        self, *, t: int, writer_id: str, artifact_id: ArtifactId, reason: str
+    ) -> None:
+        if self.invalidate_policy not in {"trigger-based", "periodic", "manual"}:
+            return
+        for dependent_artifact in self.dependency_graph.dependents_closure(artifact_id):
+            if not self._artifact_in_scope(dependent_artifact):
+                continue
+            for agent_id in self.agents:
+                if agent_id == writer_id:
+                    continue
+                self.queue.push(
+                    t=t,
+                    event_type=EventType.EV_INVALIDATE,
+                    src="global",
+                    dst=agent_id,
+                    payload={
+                        "artifact_id": dependent_artifact,
+                        "reason": reason,
+                        "dependency_source": artifact_id,
+                    },
+                )
+
+    def _artifact_in_scope(self, artifact_id: ArtifactId) -> bool:
+        if self.task_scope_filter is None:
+            return True
+        return artifact_id[0] == self.task_scope_filter
+
 
     def run(self) -> SimulationResult:
         self.pre_run()

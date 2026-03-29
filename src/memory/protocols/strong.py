@@ -7,6 +7,7 @@ from memory.protocols.base import ConsistencyProtocol
 from ..events import Event, EventType
 from ..model import Artifact, ArtifactScope, CacheEntry, ClaimType, CoherenceState
 from .judges import ConflictJudge, DeterministicConflictJudge, build_conflict_judge
+from ..semantic import SemanticCoherenceEngine
 
 if TYPE_CHECKING:
     from ..simulator import Simulator
@@ -37,6 +38,7 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
         )
         self.auto_invalidate_on_commit = auto_invalidate_on_commit
         self.deterministic_profile = deterministic_profile
+        self.semantic_engine = SemanticCoherenceEngine()
 
     def _resolve_coherence_state(
         self, old_artifact: Artifact | None, confidence: float
@@ -176,6 +178,13 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
             claim_type = ClaimType(claim_type)
         confidence = float(event.payload.get("confidence", 0.8))
         coherence_state = self._resolve_coherence_state(old_artifact, confidence)
+        semantic_decision = self.semantic_engine.decide_write_state(
+            previous=old_artifact,
+            candidate_confidence=confidence,
+            candidate_payload=event.payload,
+            default_state=coherence_state,
+        )
+        coherence_state = semantic_decision.state
 
         pending_artifact = Artifact(  # changed this to build an explicit pending artifact so latency estimation does not depend on pre-existing store state
             artifact_id=artifact_id,
@@ -223,6 +232,7 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
                     "version_id": new_version,
                     "coherence_state": coherence_state.value,
                     "confidence": confidence,
+                    "semantic_reason_codes": list(semantic_decision.reason_codes),
                 },
             )
         )
@@ -238,6 +248,7 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
                 "old_version": old_artifact.version_id if old_artifact else None,
                 "coherence_state": coherence_state.value,
                 "confidence": confidence,
+                "semantic_reason_codes": list(semantic_decision.reason_codes),
             },
         )
 
@@ -422,6 +433,13 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
                     payload={"artifact_id": artifact_id, "reason": "write_commit"},
                 )
 
+        simulator.schedule_dependency_invalidations(
+            t=simulator.now,
+            writer_id=event.src,
+            artifact_id=artifact_id,
+            reason="dependency_cascade",
+        )
+
         simulator.schedule_trigger_syncs_after_commit(
             t=simulator.now,
             writer_id=event.src,
@@ -525,6 +543,9 @@ class WriteThroughStrongProtocol(ConsistencyProtocol):
                 metadata={
                     "artifact_id": artifact_id,
                     **decision.to_metadata(),
+                    "state_transition_reason_codes": event.payload.get(
+                        "semantic_reason_codes", []
+                    ),
                     "new_version": event.payload["new_version"],
                     "old_version": event.payload["old_version"],
                     "confidence": confidence,
