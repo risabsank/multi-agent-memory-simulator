@@ -45,6 +45,8 @@ class MesiProtocol(WriteThroughStrongProtocol):
     # Another drawback is this MESI implementation is tied to a per-artifact granularity, rather than per block
     # I believe this granularity is correct/ok for inter-agent MESI, but may cause issues if per-block VM simulation is implemented down the line
     def __init__(self, bus_latency: int, *, per_block_mode: bool = False) -> None:
+        super().__init__()
+        self.bus_latency = bus_latency
         self.per_block_mode = per_block_mode
         self.states: dict[ArtifactId, dict[str, STATES]] = {}
         self.inflight: dict[
