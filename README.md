@@ -110,7 +110,7 @@ pytest tests/
 
 ---
 
-## Evaluation workflow (recommended for portfolio demos)
+## Evaluation workflow
 
 ### Option A: One-command end-to-end pipeline
 
