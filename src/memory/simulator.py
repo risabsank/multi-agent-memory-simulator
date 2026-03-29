@@ -74,13 +74,17 @@ class RunReport:
     avg_stale_version_gap: float = 0.0
     p95_stale_version_gap: float = 0.0
     max_stale_version_gap: int = 0
+    summarize_requests: int = 0
+    summarize_commits: int = 0
+    avg_summary_confidence_delta: float = 0.0
+    avg_summary_compression_ratio: float = 0.0
 
 
 class Simulator:
     """Minimal discrete-event simulator vertical slice.
 
-    Supports one cache level, write-through protocol, and 4 event types.
-    TODO(m1): add SUMMARIZE/SYNC and protocol plug-ins.
+    Supports one cache level, write-through protocol, and core event types.
+    TODO(m1): add richer SYNC behavior and protocol plug-ins.
     """
 
     def __init__(
@@ -134,6 +138,33 @@ class Simulator:
             src=agent_id,
             dst=agent_id,
             payload={"artifact_id": artifact_id, "size": size, "requested_t": t},
+        )
+
+    def schedule_summarize(
+        self,
+        t: int,
+        agent_id: str,
+        source_artifact_id: ArtifactId,
+        target_artifact_id: ArtifactId,
+        *,
+        size: int,
+        confidence_multiplier: float = 0.95,
+    ) -> None:
+        self._max_user_scheduled_t = max(self._max_user_scheduled_t, t)
+        self._known_artifact_ids.add(source_artifact_id)
+        self._known_artifact_ids.add(target_artifact_id)
+        self.queue.push(
+            t=t,
+            event_type=EventType.EV_SUMMARIZE_REQ,
+            src=agent_id,
+            dst=agent_id,
+            payload={
+                "source_artifact_id": source_artifact_id,
+                "target_artifact_id": target_artifact_id,
+                "size": size,
+                "confidence_multiplier": confidence_multiplier,
+                "requested_t": t,
+            },
         )
 
     def schedule_sync(self, t: int, agent_id: str, artifact_id: ArtifactId) -> None:
@@ -240,6 +271,13 @@ class Simulator:
             1 for t in ordered_trace if t.event == EventType.EV_INVALIDATE.value
         )
 
+        summarize_requests = sum(
+            1 for t in ordered_trace if t.event == EventType.EV_SUMMARIZE_REQ.value
+        )
+        summarize_commits = sum(
+            1 for t in ordered_trace if t.event == EventType.EV_SUMMARIZE_COMMIT.value
+        )
+
         contested_writes = sum(
             1
             for t in ordered_trace
@@ -336,6 +374,29 @@ class Simulator:
             _percentile(stale_version_gaps, 0.95) if stale_version_gaps else 0.0
         )
         max_stale_version_gap = max(stale_version_gaps) if stale_version_gaps else 0
+
+        summary_req_events = [
+            t for t in ordered_trace if t.event == EventType.EV_SUMMARIZE_REQ.value
+        ]
+        confidence_deltas = [
+            float(t.metadata["summary_confidence"]) - float(t.metadata["source_confidence"])
+            for t in summary_req_events
+            if isinstance(t.metadata.get("summary_confidence"), (int, float))
+            and isinstance(t.metadata.get("source_confidence"), (int, float))
+        ]
+        avg_summary_confidence_delta = (
+            sum(confidence_deltas) / len(confidence_deltas) if confidence_deltas else 0.0
+        )
+        compression_ratios = [
+            float(t.metadata["source_size"]) / float(t.metadata["summary_size"])
+            for t in summary_req_events
+            if isinstance(t.metadata.get("source_size"), (int, float))
+            and isinstance(t.metadata.get("summary_size"), (int, float))
+            and float(t.metadata["summary_size"]) > 0
+        ]
+        avg_summary_compression_ratio = (
+            sum(compression_ratios) / len(compression_ratios) if compression_ratios else 0.0
+        )
 
         # Approximate convergence: after global commit, how long until each other agent
         # first reads that version (or newer) for the same artifact.
@@ -498,6 +559,10 @@ class Simulator:
             avg_stale_version_gap=avg_stale_version_gap,
             p95_stale_version_gap=p95_stale_version_gap,
             max_stale_version_gap=max_stale_version_gap,
+            summarize_requests=summarize_requests,
+            summarize_commits=summarize_commits,
+            avg_summary_confidence_delta=avg_summary_confidence_delta,
+            avg_summary_compression_ratio=avg_summary_compression_ratio,
         )
 
     def _handle(self, event: Event) -> None:
@@ -506,6 +571,8 @@ class Simulator:
             EventType.EV_READ_RESP: self.protocol.on_read_resp,
             EventType.EV_WRITE_REQ: self.protocol.on_write_req,
             EventType.EV_WRITE_COMMIT: self.protocol.on_write_commit,
+            EventType.EV_SUMMARIZE_REQ: self.protocol.on_summarize_req,
+            EventType.EV_SUMMARIZE_COMMIT: self.protocol.on_summarize_commit,
             EventType.EV_CONFLICT_CHECK: self.protocol.on_sync_req,
             EventType.EV_SYNC_REQ: self.protocol.on_sync_req,
             EventType.EV_INVALIDATE: self.protocol.on_invalidate_req,

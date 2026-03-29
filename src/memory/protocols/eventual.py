@@ -268,6 +268,98 @@ class EventualProtocol(ConsistencyProtocol):
             },
         )
 
+    def on_summarize_req(self, simulator: Simulator, event: Event) -> None:
+        agent = simulator.agents[event.src]
+        source_artifact_id = tuple(event.payload["source_artifact_id"])
+        target_artifact_id = tuple(event.payload["target_artifact_id"])
+        requested_t = int(event.payload["requested_t"])
+        summary_size = int(event.payload["size"])
+        confidence_multiplier = float(event.payload.get("confidence_multiplier", 0.95))
+
+        source_artifact = simulator.global_memory.get_artifact(source_artifact_id)
+        previous_target = (
+            simulator.global_memory.get_artifact(target_artifact_id)
+            if simulator.global_memory.artifact_exists(target_artifact_id)
+            else None
+        )
+        summary_confidence = max(
+            0.0, min(1.0, source_artifact.confidence * confidence_multiplier)
+        )
+        coherence_state = self._resolve_commit_state(previous_target, summary_confidence)
+        new_version = simulator.clock.next(target_artifact_id)
+        provenance = f"summary:{agent.agent_id}<-{source_artifact.provenance}"
+
+        summary_artifact = Artifact(
+            artifact_id=target_artifact_id,
+            version_id=new_version,
+            size=summary_size,
+            scope=source_artifact.scope,
+            claim_type=source_artifact.claim_type,
+            provenance=provenance,
+            confidence=summary_confidence,
+            coherence_state=coherence_state,
+            observed_at=simulator.now,
+            valid_at=source_artifact.valid_at,
+        )
+        base_payload = {
+            "artifact_id": target_artifact_id,
+            "source_artifact_id": source_artifact_id,
+            "version_id": new_version,
+            "size": summary_size,
+            "scope": source_artifact.scope,
+            "claim_type": source_artifact.claim_type,
+            "provenance": provenance,
+            "confidence": summary_confidence,
+            "coherence_state": coherence_state,
+            "observed_at": simulator.now,
+            "valid_at": source_artifact.valid_at,
+            "requested_t": requested_t,
+            "source_confidence": source_artifact.confidence,
+            "source_size": source_artifact.size,
+        }
+        cache_commit_time = simulator.now + agent.cache.store_artifact_latency(
+            summary_artifact
+        )
+        simulator.queue.push(
+            t=cache_commit_time,
+            event_type=EventType.EV_SUMMARIZE_COMMIT,
+            src=agent.agent_id,
+            dst="cache",
+            payload=base_payload,
+        )
+        global_commit_time = (
+            simulator.now
+            + simulator.global_memory.store_artifact_latency(summary_artifact)
+            * self.propagation_delay
+        )
+        simulator.queue.push(
+            t=global_commit_time,
+            event_type=EventType.EV_SUMMARIZE_COMMIT,
+            src=agent.agent_id,
+            dst="global",
+            payload=base_payload,
+        )
+        simulator.trace.append(
+            simulator.trace_line_type(
+                simulator.now,
+                EventType.EV_SUMMARIZE_REQ.value,
+                f"{agent.agent_id} summarized {source_artifact_id} -> {target_artifact_id} v{new_version} (pending sync)",
+                metadata={
+                    "agent": agent.agent_id,
+                    "source_artifact_id": source_artifact_id,
+                    "artifact_id": target_artifact_id,
+                    "version_id": new_version,
+                    "source_confidence": source_artifact.confidence,
+                    "summary_confidence": summary_confidence,
+                    "source_size": source_artifact.size,
+                    "summary_size": summary_size,
+                    "provenance": provenance,
+                    "coherence_state": coherence_state.value,
+                    "pending_global_commit": True,
+                },
+            )
+        )
+
     def on_sync_req(self, simulator: Simulator, event: Event) -> None:
         if event.type == EventType.EV_SYNC_REQ:
             agent = simulator.agents[event.src]
@@ -427,4 +519,41 @@ class EventualProtocol(ConsistencyProtocol):
             t=simulator.now,
             writer_id=event.src,
             artifact_id=artifact_id,
+        )
+    
+    def on_summarize_commit(self, simulator: Simulator, event: Event) -> None:
+        artifact = ConsistencyProtocol.create_artifact(simulator, event)
+        artifact_id = tuple(event.payload["artifact_id"])
+        latency = simulator.now - int(event.payload["requested_t"])
+        writer = simulator.agents[event.src]
+
+        if event.dst == "cache":
+            writer.cache.store_artifact(artifact)
+        else:
+            simulator.global_memory.store_artifact(artifact)
+            writer.cache.store_artifact(artifact)
+            writer.stats.write_latency_total += latency
+            writer.stats.write_count += 1
+            writer.stats.write_latencies.append(latency)
+
+        simulator.trace.append(
+            simulator.trace_line_type(
+                simulator.now,
+                EventType.EV_SUMMARIZE_COMMIT.value,
+                f"{event.dst} summary commit {artifact_id} v{artifact.version_id}",
+                metadata={
+                    "artifact_id": artifact_id,
+                    "source_artifact_id": tuple(event.payload["source_artifact_id"]),
+                    "version_id": artifact.version_id,
+                    "coherence_state": artifact.coherence_state.value,
+                    "confidence": artifact.confidence,
+                    "source_confidence": float(event.payload["source_confidence"]),
+                    "source_size": int(event.payload["source_size"]),
+                    "summary_size": int(event.payload["size"]),
+                    "provenance": artifact.provenance,
+                    "latency": latency,
+                    "commit_target": event.dst,
+                    "delayed_propagation": event.dst == "global",
+                },
+            )
         )
