@@ -15,7 +15,7 @@ from .types import ConflictDecision
 
 @dataclass(frozen=True)
 class LLMPromptSpec:
-    version: str = "llm_conflict"
+    version: str = "llm_conflict_v1"
     template: str = """You are a conflict judge for a multi-agent memory system.
 Compare candidate write confidence against existing committed artifact confidence and context.
 Return ONLY JSON with this exact schema:
